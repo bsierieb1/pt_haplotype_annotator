@@ -4,6 +4,7 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 BETWEEN_SCRIPT = APP_DIR / "make_between_regions.py"
 import streamlit as st
+from gff_to_genbank_patched import gff_fasta_to_genbank
 
 st.set_page_config(page_title="FASTA+BED+Guides → GenBank", layout="centered")
 st.title("Annotate haplotypes: BED + guides_even/odd → combined GFF3 → GenBank")
@@ -186,11 +187,13 @@ if run_btn:
         combined_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
 
         # 7) gff-to-genbank
-        log("8) GFF3+FASTA -> GenBank")
-        rc, out, err = run_cmd(["gff-to-genbank", str(combined_gff), str(ref_path)], wd)
-        if rc != 0:
-            fail("gff-to-genbank", out, err)
-        gbk_path.write_text(out, encoding="utf-8")
+        log("8) GFF3+FASTA -> GenBank (patched)")
+		try:
+		    gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
+		except Exception as e:
+		    st.error("Failed at: GenBank conversion")
+		    st.exception(e)
+		    st.stop()
 
         st.success("Done!")
 
