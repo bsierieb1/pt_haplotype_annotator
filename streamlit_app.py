@@ -188,12 +188,12 @@ if run_btn:
 
         # 7) gff-to-genbank
         log("8) GFF3+FASTA -> GenBank (patched)")
-		try:
-		    gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
-		except Exception as e:
-		    st.error("Failed at: GenBank conversion")
-		    st.exception(e)
-		    st.stop()
+        try:
+            gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
+        except Exception as e:
+            st.error("Failed at: GenBank conversion")
+            st.exception(e)
+            st.stop()
 
         st.success("Done!")
 
