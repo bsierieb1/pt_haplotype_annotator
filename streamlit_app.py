@@ -1,7 +1,8 @@
 import subprocess
 import tempfile
 from pathlib import Path
-
+APP_DIR = Path(__file__).resolve().parent
+BETWEEN_SCRIPT = APP_DIR / "make_between_regions.py"
 import streamlit as st
 
 st.set_page_config(page_title="FASTA+BED+Guides → GenBank", layout="centered")
@@ -147,7 +148,7 @@ if run_btn:
         # 5) between-regions
         log("5) between-regions even")
         rc, out, err = run_cmd(
-            ["python", "make_between_regions.py",
+            ["python", str(BETWEEN_SCRIPT),
              "--gff", str(even_gff),
              "--fasta", str(ref_path),
              "--out", str(between_even),
@@ -160,7 +161,7 @@ if run_btn:
 
         log("6) between-regions odd")
         rc, out, err = run_cmd(
-            ["python", "make_between_regions.py",
+            ["python", str(BETWEEN_SCRIPT),
              "--gff", str(odd_gff),
              "--fasta", str(ref_path),
              "--out", str(between_odd),
