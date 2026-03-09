@@ -54,6 +54,7 @@ def gff_fasta_to_genbank(gff_path: str, fasta_path: str, out_path: str):
     # Fix IDs to be GenBank-safe
     for rec in annotated_records:
         rec.id = re.sub(r"[^A-Za-z0-9_.:-]", "_", rec.id)
+        rec.annotations.setdefault("molecule_type", "DNA")
 
     # Write GenBank
     with open(out_path, "w", encoding="utf-8") as out_handle:
