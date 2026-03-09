@@ -38,17 +38,23 @@ def _check_gff(gff_iter: Iterable):
 
 
 def gff_fasta_to_genbank(gff_path: str, fasta_path: str, out_path: str):
-    """
-    Read FASTA + GFF3 and write GenBank.
-    """
-    # Parse GFF3 annotations onto FASTA sequences:
-    with open(fasta_path, "r") as fasta_handle:
+    from Bio import SeqIO
+    from BCBio import GFF
+    import re
+
+    # Load FASTA records
+    with open(fasta_path, "r", encoding="utf-8") as fasta_handle:
         fasta_records = list(SeqIO.parse(fasta_handle, "fasta"))
+    base_dict = {r.id: r for r in fasta_records}
 
-    with open(gff_path, "r") as gff_handle:
-        annotated_records = GFF.parse(gff_handle, base_dict={r.id: r for r in fasta_records})
+    # IMPORTANT: parse into a LIST while gff_handle is open (avoid closed-file generator)
+    with open(gff_path, "r", encoding="utf-8") as gff_handle:
+        annotated_records = list(GFF.parse(gff_handle, base_dict=base_dict))
 
-    records = _check_gff(_fix_ncbi_id(_extract_regions(annotated_records)))
+    # Fix IDs to be GenBank-safe
+    for rec in annotated_records:
+        rec.id = re.sub(r"[^A-Za-z0-9_.:-]", "_", rec.id)
 
-    with open(out_path, "w") as out_handle:
-        SeqIO.write(records, out_handle, "genbank")
+    # Write GenBank
+    with open(out_path, "w", encoding="utf-8") as out_handle:
+        SeqIO.write(annotated_records, out_handle, "genbank")
