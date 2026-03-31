@@ -126,7 +126,7 @@ def main():
     Path(args.out).write_text("\n".join(out_lines) + "\n", encoding="utf-8")
 
     # Small summary for logs
-    print(f"Wrote {kept} between-features to {args.out}")
+    print(f"Wrote {kept} tiles to {args.out}")
     print(f"Skipped (too long): {skipped_len}")
     print(f"Skipped (contains N): {skipped_n}")
     print(f"Plus guides with no downstream minus: {skipped_none}")

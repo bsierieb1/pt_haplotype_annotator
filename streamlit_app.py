@@ -420,8 +420,8 @@ def run_single_locus_pipeline(
     odd_mapped = locus_dir / "guides_odd.mapped"
     even_gff = locus_dir / "guides_even.gff3"
     odd_gff = locus_dir / "guides_odd.gff3"
-    between_even = locus_dir / "between_regions_even.gff3"
-    between_odd = locus_dir / "between_regions_odd.gff3"
+    even_tiles = locus_dir / "between_regions_even.gff3"
+    odd_tiles = locus_dir / "between_regions_odd.gff3"
     combined_gff = locus_dir / "combined.gff3"
     gbk_path = locus_dir / "custom.gbk"
 
@@ -433,7 +433,7 @@ def run_single_locus_pipeline(
     map_guides_to_gff(even_path, even_mapped, even_gff, "even", locus_dir, log)
     map_guides_to_gff(odd_path, odd_mapped, odd_gff, "odd", locus_dir, log)
 
-    log("between-regions even")
+    log("predict even tiles")
     rc, out, err = run_cmd(
         [
             "python",
@@ -443,7 +443,7 @@ def run_single_locus_pipeline(
             "--fasta",
             str(ref_path),
             "--out",
-            str(between_even),
+            str(even_tiles),
             "--maxlen",
             str(int(max_between_len)),
         ],
@@ -453,7 +453,7 @@ def run_single_locus_pipeline(
         fail("make_between_regions.py (even)", out, err)
     log(out.strip() or "between even done")
 
-    log("between-regions odd")
+    log("predict odd tiles")
     rc, out, err = run_cmd(
         [
             "python",
@@ -463,7 +463,7 @@ def run_single_locus_pipeline(
             "--fasta",
             str(ref_path),
             "--out",
-            str(between_odd),
+            str(odd_tiles),
             "--maxlen",
             str(int(max_between_len)),
         ],
@@ -478,11 +478,11 @@ def run_single_locus_pipeline(
     combined.append(strip_header(regions_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(even_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(odd_gff.read_text(encoding="utf-8")))
-    combined.append(strip_header(between_even.read_text(encoding="utf-8")))
-    combined.append(strip_header(between_odd.read_text(encoding="utf-8")))
+    combined.append(strip_header(even_tiles.read_text(encoding="utf-8")))
+    combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
     combined_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
 
-    log("GFF3+FASTA -> GenBank (patched)")
+    log("GFF3+FASTA -> GenBank")
     try:
         gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
     except Exception as e:
@@ -495,8 +495,8 @@ def run_single_locus_pipeline(
         "odd_mapped": odd_mapped,
         "even_gff": even_gff,
         "odd_gff": odd_gff,
-        "between_even": between_even,
-        "between_odd": between_odd,
+        "even_tiles": even_tiles,
+        "odd_tiles": odd_tiles,
         "combined_gff": combined_gff,
         "gbk_path": gbk_path,
     }
@@ -508,7 +508,7 @@ def run_single_locus_pipeline(
 
 input_mode = st.radio(
     "Reference source",
-    ["Use uploaded custom reference", "Fetch hg38 locus by coordinates"],
+    ["Fetch hg38 locus by coordinates", "Use uploaded custom reference"],
 )
 
 if input_mode == "Use uploaded custom reference":
@@ -529,9 +529,9 @@ guides_odd = st.file_uploader("Guides ODD FASTA (guides_odd.fa)", type=["fa", "f
 
 with st.expander("Advanced", expanded=False):
     max_between_len = st.number_input(
-        "Max between-region length (bp)", min_value=1, value=20000, step=1000
+        "Max fragment length (bp)", min_value=1, value=20000, step=1000
     )
-    keep_intermediates = st.checkbox("Show & allow download of intermediate files", value=True)
+    keep_intermediates = st.checkbox("Show & allow download of intermediate files", value=False)
 
 if input_mode == "Use uploaded custom reference":
     ready = bool(ref_fa and regions_bed and guides_even and guides_odd)
@@ -620,12 +620,12 @@ if run_btn:
                 )
                 st.download_button(
                     "between_regions_even.gff3",
-                    outputs["between_even"].read_bytes(),
+                    outputs["even_tiles"].read_bytes(),
                     file_name="between_regions_even.gff3",
                 )
                 st.download_button(
                     "between_regions_odd.gff3",
-                    outputs["between_odd"].read_bytes(),
+                    outputs["odd_tiles"].read_bytes(),
                     file_name="between_regions_odd.gff3",
                 )
                 st.download_button(
@@ -690,8 +690,8 @@ if run_btn:
                         "genes": count_gff_features(regions_gff),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
-                        "between_even": count_gff_features(outputs["between_even"]),
-                        "between_odd": count_gff_features(outputs["between_odd"]),
+                        "even_tiles": count_gff_features(outputs["even_tiles"]),
+                        "odd_tiles": count_gff_features(outputs["odd_tiles"]),
                         "genbank_file": f"{locus_slug}/custom.gbk",
                     }
                 )
@@ -711,5 +711,5 @@ if run_btn:
 
             if keep_intermediates:
                 st.caption(
-                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, between-region GFF3s, combined.gff3, and custom.gbk."
+                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, and custom.gbk."
                 )
