@@ -15,8 +15,8 @@ from gff_to_genbank_patched import gff_fasta_to_genbank
 APP_DIR = Path(__file__).resolve().parent
 BETWEEN_SCRIPT = APP_DIR / "make_between_regions.py"
 
-st.set_page_config(page_title="PT annotator - testing", layout="centered")
-st.title("PureTarget tile annotator - testing")
+st.set_page_config(page_title="PT annotator", layout="centered")
+st.title("PureTarget tile annotator")
 
 st.markdown(
     """
