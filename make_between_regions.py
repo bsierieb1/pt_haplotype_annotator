@@ -64,7 +64,7 @@ def main():
     ap.add_argument("--out", required=True, help="Output GFF3")
     ap.add_argument("--maxlen", type=int, default=20000, help="Max allowed gap length (default 20000)")
     ap.add_argument("--feature-type", default="misc_feature", help="GFF3 type for output features")
-    ap.add_argument("--name", default="SEQUENCE_BETWEEN", help="Name/label for output features")
+    ap.add_argument("--name", default="TILE", help="Name/label for output features")
     args = ap.parse_args()
 
     ref = read_fasta(args.fasta)

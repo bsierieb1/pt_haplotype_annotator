@@ -15,23 +15,23 @@ from gff_to_genbank_patched import gff_fasta_to_genbank
 APP_DIR = Path(__file__).resolve().parent
 BETWEEN_SCRIPT = APP_DIR / "make_between_regions.py"
 
-st.set_page_config(page_title="FASTA+BED+Guides -> GenBank", layout="centered")
-st.title("Annotate haplotypes: BED + guides_even/odd -> combined GFF3 -> GenBank")
+st.set_page_config(page_title="PT annotator - testing", layout="centered")
+st.title("PureTarget tile annotator - testing")
 
 st.markdown(
     """
+This tool takes a set of gRNAs designed for a PureTarget assay, maps them to a reference, and predicts tiles. Disclaimer: This is not an official PacBio tool.
+
 Choose one input mode:
 
-- **Use uploaded custom reference**
-- **Fetch hg38 locus by coordinates**
+- **Provide the list of targeted genes or coordinates of targeted loci (human hg38 only)**
+- **Upload custom target region FASTA**
 
 The app then runs:
-1) Reference preparation
-2) Region annotations -> GFF3
-3) Bowtie exact mapping for even + odd guides
-4) Between-regions annotation (downstream only, <=20 kb, excludes regions containing N)
-5) Combine GFF3s
-6) GFF3 + FASTA -> GenBank
+1) Bowtie exact mapping for even + odd guides
+2) Tile annotation (downstream only, <=20 kb by default, excludes regions containing N)
+5) Combine all annotations
+6) Locus FASTA + annotation GFF3s -> GenBank
 """
 )
 
@@ -40,6 +40,8 @@ The app then runs:
 # -----------------------------
 
 COORD_RE = re.compile(r"^(?:chr)?([A-Za-z0-9_]+):(\d+)-(\d+)$")
+CANONICAL_CHROMS = {str(i) for i in range(1, 23)} | {"X", "Y", "M"}
+GENE_FLANK_BP = 20000
 
 
 def run_cmd(cmd, cwd: Path):
@@ -88,6 +90,16 @@ def http_get_json(url: str, headers: dict[str, str] | None = None):
         stop_with_error(f"Failed to parse JSON response from remote service: {e}\n\nResponse:\n{txt[:4000]}")
 
 
+def canonicalize_chrom(chrom: str) -> str | None:
+    chrom = (chrom or "").strip()
+    if chrom.lower().startswith("chr"):
+        chrom = chrom[3:]
+    chrom = chrom.upper()
+    if chrom == "MT":
+        chrom = "M"
+    return chrom if chrom in CANONICAL_CHROMS else None
+
+
 def parse_locus(coord_text: str) -> tuple[str, int, int]:
     """
     Accept:
@@ -105,6 +117,12 @@ def parse_locus(coord_text: str) -> tuple[str, int, int]:
         )
 
     chrom, start_s, end_s = m.groups()
+    chrom = canonicalize_chrom(chrom)
+    if chrom is None:
+        raise ValueError(
+            f"Invalid locus coordinates '{coord_text}'. Only canonical human chromosomes 1-22, X, Y, and M are supported."
+        )
+
     start1 = int(start_s)
     end1 = int(end_s)
 
@@ -116,16 +134,76 @@ def parse_locus(coord_text: str) -> tuple[str, int, int]:
     return chrom, start1, end1
 
 
+def fetch_hg38_gene_by_symbol(symbol: str) -> dict:
+    gene_symbol = (symbol or "").strip()
+    url = f"https://rest.ensembl.org/lookup/symbol/homo_sapiens/{gene_symbol}"
+    data = http_get_json(url, headers={"Content-Type": "application/json"})
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"'{symbol}' could not be resolved as a human gene symbol.")
+
+    seq_region_name = data.get("seq_region_name")
+    start1 = data.get("start")
+    end1 = data.get("end")
+    display_name = data.get("display_name") or data.get("id") or gene_symbol
+
+    chrom = canonicalize_chrom(str(seq_region_name or ""))
+    if chrom is None:
+        raise ValueError(
+            f"Gene symbol '{symbol}' resolved to a non-canonical locus ('{seq_region_name}'), which is not supported."
+        )
+    if start1 is None or end1 is None:
+        raise ValueError(f"Gene symbol '{symbol}' resolved, but coordinates were missing.")
+
+    return {
+        "display_name": str(display_name),
+        "chrom": chrom,
+        "start1": int(start1),
+        "end1": int(end1),
+    }
+
+
+def resolve_locus_or_gene(line: str) -> tuple[str, int, int]:
+    try:
+        return parse_locus(line)
+    except ValueError:
+        gene = fetch_hg38_gene_by_symbol(line)
+        return (
+            gene["chrom"],
+            max(1, gene["start1"] - GENE_FLANK_BP),
+            gene["end1"] + GENE_FLANK_BP,
+        )
+
+
+def merge_overlapping_loci(loci: list[tuple[str, int, int]]) -> list[tuple[str, int, int]]:
+    if not loci:
+        return []
+
+    merged = []
+    for chrom, start1, end1 in sorted(loci, key=lambda x: (x[0], x[1], x[2])):
+        if not merged:
+            merged.append([chrom, start1, end1])
+            continue
+
+        last_chrom, last_start1, last_end1 = merged[-1]
+        if chrom == last_chrom and start1 <= last_end1:
+            merged[-1][2] = max(last_end1, end1)
+        else:
+            merged.append([chrom, start1, end1])
+
+    return [(chrom, start1, end1) for chrom, start1, end1 in merged]
+
+
+
 def parse_multi_loci_or_stop(multiline_text: str) -> list[tuple[str, int, int]]:
     """
-    One interval per line. Deduplicate exact repeated parsed loci while preserving order.
+    One interval or gene symbol per line. Deduplicate exact repeated resolved loci, then merge overlapping loci.
     """
     raw_lines = [ln.strip() for ln in (multiline_text or "").splitlines()]
     lines = [ln for ln in raw_lines if ln]
 
     if not lines:
         stop_with_error(
-            "Please enter at least one locus coordinate, one per line."
+            "Please enter at least one locus coordinate or gene symbol, one per line."
         )
 
     parsed = []
@@ -133,14 +211,14 @@ def parse_multi_loci_or_stop(multiline_text: str) -> list[tuple[str, int, int]]:
 
     for i, line in enumerate(lines, start=1):
         try:
-            locus = parse_locus(line)
+            locus = resolve_locus_or_gene(line)
         except ValueError as e:
             stop_with_error(f"Error on line {i}: {e}")
         if locus not in seen:
             seen.add(locus)
             parsed.append(locus)
 
-    return parsed
+    return merge_overlapping_loci(parsed)
 
 
 def make_local_seqid(chrom_no_chr: str, start1: int, end1: int) -> str:
@@ -439,8 +517,8 @@ if input_mode == "Use uploaded custom reference":
     locus_coords = None
 else:
     locus_coords = st.text_area(
-        "Locus coordinates (one interval per line)",
-        placeholder="chr7:55019017-55211628\n7:140424943-140624564\nchr17:43044295-43125483",
+        "Locus coordinates or gene names (one per line)",
+        placeholder="EGFR\nchr7:55019017-55211628\nMYC",
         height=150,
     )
     ref_fa = None
