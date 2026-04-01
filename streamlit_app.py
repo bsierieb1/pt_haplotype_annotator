@@ -966,8 +966,8 @@ if run_btn:
                     extra = "" if n_total <= shown else f"\n... and {n_total - shown} more"
                     st.warning(
                         f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:
-" + "
-".join(warning_lines) + extra
+                        " + "
+                        ".join(warning_lines) + extra
                     )
 
                 summary_rows.append(
