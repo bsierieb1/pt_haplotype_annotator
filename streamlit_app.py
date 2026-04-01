@@ -1045,7 +1045,7 @@ if run_btn:
                     shown_count = 0
                     for item in non_ngg_pam_warnings[:10]:
                         st.warning(
-                            f"{item['guide']} ({item['pool']}) has non-NGG PAM: {item['pam_seq']}"
+                            f"{item['guide']} ({item['pool']}) has non-NGG PAM"
                         )
                         shown_count += 1
 
@@ -1058,9 +1058,6 @@ if run_btn:
                         "seq_length_bp": len(seq),
                         "genes": count_gff_features(regions_gff),
                         "common_snps": len(snp_records),
-                        "guides_with_common_snp_overlap": len({(x["pool"], x["guide"]) for x in guide_snp_overlaps}),
-                        "guides_with_common_snp_in_pam": len({(x["pool"], x["guide"]) for x in pam_snp_overlaps}),
-                        "guides_with_non_ngg_pam": len({(x["pool"], x["guide"]) for x in non_ngg_pam_warnings}),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
