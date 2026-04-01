@@ -369,10 +369,57 @@ def ucsc_common_snps_to_local_gff3(snps, chrom_no_chr: str, start1: int, end1: i
                 "ref": str(snp.get("ref") or ""),
                 "alts": str(snp.get("alts") or ""),
                 "minorAlleleFreq": str(snp.get("minorAlleleFreq") or ""),
+                "freqSourceCount": str(snp.get("freqSourceCount") or ""),
             }
         )
 
     return "\n".join(lines) + "\n", local_records
+
+
+def summarize_minor_allele_freq(maf_text: str, freq_source_count_text: str) -> str:
+    values = []
+    for token in str(maf_text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except ValueError:
+            continue
+        if value == float("inf") or value == float("-inf"):
+            continue
+        if value != value:
+            continue
+        values.append(value)
+
+    reported = len(values)
+    try:
+        total = int(str(freq_source_count_text or "").strip())
+    except ValueError:
+        total = reported
+
+    if reported == 0:
+        return "MAF unavailable"
+
+    max_value = max(values)
+    return f"MAF reported by {reported}/{total} sources; max={max_value:.3f}"
+
+
+def guide_pam_interval(feature: dict) -> tuple[int, int] | None:
+    start1 = int(feature.get("start1", 0))
+    end1 = int(feature.get("end1", 0))
+    strand = str(feature.get("strand") or ".")
+    if start1 < 1 or end1 < start1:
+        return None
+    if strand == "+":
+        return end1 + 1, end1 + 3
+    if strand == "-":
+        pam_start1 = max(1, start1 - 3)
+        pam_end1 = start1 - 1
+        if pam_end1 < pam_start1:
+            return None
+        return pam_start1, pam_end1
+    return None
 
 
 def parse_gff_features(path: Path):
