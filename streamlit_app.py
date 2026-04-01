@@ -458,14 +458,25 @@ def find_guides_with_non_ngg_pam(guide_gff_paths, ref_seq: str):
             pam_seq = extract_interval_sequence(ref_seq, pam_start1, pam_end1)
             if len(pam_seq) != 3:
                 continue
-            if pam_seq[1:] != "GG":
+
+            strand = feat.get("strand", ".")
+            is_bad_pam = False
+
+            if strand == "+":
+                is_bad_pam = pam_seq[1:] != "GG"
+            elif strand == "-":
+                is_bad_pam = pam_seq[:2] != "CC"
+            else:
+                continue
+
+            if is_bad_pam:
                 warnings.append(
                     {
                         "pool": pool_name,
                         "guide": guide_name,
                         "guide_start1": feat["start1"],
                         "guide_end1": feat["end1"],
-                        "guide_strand": feat["strand"],
+                        "guide_strand": strand,
                         "pam_start1": pam_start1,
                         "pam_end1": pam_end1,
                         "pam_seq": pam_seq,
