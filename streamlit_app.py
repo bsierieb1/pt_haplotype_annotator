@@ -31,8 +31,10 @@ Choose one input mode:
 The app then runs:
 1) Bowtie exact mapping for even + odd guides
 2) Tile annotation (downstream only, <=20 kb by default, excludes regions containing N)
-5) Combine all annotations
-6) Locus FASTA + annotation GFF3s -> GenBank
+3) Combine all annotations
+4) Locus FASTA + annotation GFF3s -> GenBank
+
+In human hg38 mode, the app will also check for common SNPs overlapping the guide or its PAM. Guides with non-NGG PAMs will also be flagged.
 """
 )
 
