@@ -1001,23 +1001,45 @@ if run_btn:
                     [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
                     snp_records,
                 )
+                non_ngg_pam_warnings = find_guides_with_non_ngg_pam(
+                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
+                    seq,
+                )
                 if guide_snp_overlaps or pam_snp_overlaps:
-                    warning_lines = []
+                    st.warning(f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}")
+
+                    shown_count = 0
+
                     for item in guide_snp_overlaps[:10]:
                         line = f"{item['guide']} ({item['pool']}) overlaps {item['snp']} at {item['snp_genomic_coord']}"
                         if item.get("maf_summary"):
                             line += f" [{item['maf_summary']}]"
-                        warning_lines.append(line)
+                        st.warning(line)
+                        shown_count += 1
+
                     for item in pam_snp_overlaps[:10]:
                         line = f"{item['guide']} ({item['pool']}) has a common SNP in PAM: {item['snp']} at {item['snp_genomic_coord']}"
                         if item.get("maf_summary"):
                             line += f" [{item['maf_summary']}]"
-                        warning_lines.append(line)
+                        st.warning(line)
+                        shown_count += 1
+
                     n_total = len(guide_snp_overlaps) + len(pam_snp_overlaps)
-                    shown = min(len(guide_snp_overlaps), 10) + min(len(pam_snp_overlaps), 10)
-                    extra = "" if n_total <= shown else f"\n... and {n_total - shown} more"
-                    warning_text = f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:\n" + "\n".join(warning_lines) + extra
-                    st.warning(warning_text)
+                    if n_total > shown_count:
+                        st.warning(f"... and {n_total - shown_count} more")
+
+                if non_ngg_pam_warnings:
+                    st.warning(f"Non-NGG PAM warning for {chrom_no_chr}:{start1}-{end1}")
+
+                    shown_count = 0
+                    for item in non_ngg_pam_warnings[:10]:
+                        st.warning(
+                            f"{item['guide']} ({item['pool']}) has non-NGG PAM: {item['pam_seq']}"
+                        )
+                        shown_count += 1
+
+                    if len(non_ngg_pam_warnings) > shown_count:
+                        st.warning(f"... and {len(non_ngg_pam_warnings) - shown_count} more")
 
                 summary_rows.append(
                     {
