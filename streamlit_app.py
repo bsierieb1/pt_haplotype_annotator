@@ -422,6 +422,58 @@ def guide_pam_interval(feature: dict) -> tuple[int, int] | None:
     return None
 
 
+def extract_interval_sequence(seq: str, start1: int, end1: int) -> str:
+    if start1 < 1 or end1 < start1 or end1 > len(seq):
+        return ""
+    return seq[start1 - 1:end1].upper()
+
+
+def format_warning_lines(items: list[dict], message_builder, indent: str = "  - ") -> list[str]:
+    grouped = {}
+    order = []
+    for item in items:
+        key = (item.get("pool", "?"), item.get("guide", "guide"))
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(item)
+
+    lines = []
+    for pool, guide in order:
+        lines.append(f"{guide} ({pool})")
+        for item in grouped[(pool, guide)]:
+            lines.append(indent + message_builder(item))
+    return lines
+
+
+def find_guides_with_non_ngg_pam(guide_gff_paths, ref_seq: str):
+    warnings = []
+    for pool_name, gff_path in guide_gff_paths:
+        for feat in parse_gff_features(gff_path):
+            guide_name = feat["attrs"].get("Name") or feat["attrs"].get("label") or feat["attrs"].get("ID") or "guide"
+            pam_interval = guide_pam_interval(feat)
+            if pam_interval is None:
+                continue
+            pam_start1, pam_end1 = pam_interval
+            pam_seq = extract_interval_sequence(ref_seq, pam_start1, pam_end1)
+            if len(pam_seq) != 3:
+                continue
+            if pam_seq[1:] != "GG":
+                warnings.append(
+                    {
+                        "pool": pool_name,
+                        "guide": guide_name,
+                        "guide_start1": feat["start1"],
+                        "guide_end1": feat["end1"],
+                        "guide_strand": feat["strand"],
+                        "pam_start1": pam_start1,
+                        "pam_end1": pam_end1,
+                        "pam_seq": pam_seq,
+                    }
+                )
+    return warnings
+
+
 def parse_gff_features(path: Path):
     features = []
     with open(path, "r", encoding="utf-8") as fh:
@@ -975,6 +1027,7 @@ if run_btn:
                         "common_snps": len(snp_records),
                         "guides_with_common_snp_overlap": len({(x["pool"], x["guide"]) for x in guide_snp_overlaps}),
                         "guides_with_common_snp_in_pam": len({(x["pool"], x["guide"]) for x in pam_snp_overlaps}),
+                        "guides_with_non_ngg_pam": len({(x["pool"], x["guide"]) for x in non_ngg_pam_warnings}),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
