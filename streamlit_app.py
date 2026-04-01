@@ -945,19 +945,30 @@ if run_btn:
                     snp_gff_text=snp_gff_text,
                 )
 
-                guide_snp_overlaps = find_guide_snp_overlaps(
+                guide_snp_overlaps, pam_snp_overlaps = find_guide_snp_overlaps(
                     [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
                     snp_records,
                 )
-                if guide_snp_overlaps:
-                    warning_lines = [
-                        f"{item['guide']} ({item['pool']}) overlaps {item['snp']} at {item['snp_genomic_coord']}"
-                        + (f" [minorAlleleFreq={item['minorAlleleFreq']}]" if item['minorAlleleFreq'] else "")
-                        for item in guide_snp_overlaps[:10]
-                    ]
-                    extra = "" if len(guide_snp_overlaps) <= 10 else f"\n... plus {len(guide_snp_overlaps) - 10} more overlap(s)."
+                if guide_snp_overlaps or pam_snp_overlaps:
+                    warning_lines = []
+                    for item in guide_snp_overlaps[:10]:
+                        line = f"{item['guide']} ({item['pool']}) overlaps {item['snp']} at {item['snp_genomic_coord']}"
+                        if item.get("maf_summary"):
+                            line += f" [{item['maf_summary']}]"
+                        warning_lines.append(line)
+                    for item in pam_snp_overlaps[:10]:
+                        line = f"{item['guide']} ({item['pool']}) has a common SNP in PAM: {item['snp']} at {item['snp_genomic_coord']}"
+                        if item.get("maf_summary"):
+                            line += f" [{item['maf_summary']}]"
+                        warning_lines.append(line)
+                    n_total = len(guide_snp_overlaps) + len(pam_snp_overlaps)
+                    shown = min(len(guide_snp_overlaps), 10) + min(len(pam_snp_overlaps), 10)
+                    extra = "" if n_total <= shown else f"
+... plus {n_total - shown} more overlap(s)."
                     st.warning(
-                        f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:\n" + "\n".join(warning_lines) + extra
+                        f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:
+" + "
+".join(warning_lines) + extra
                     )
 
                 summary_rows.append(
@@ -967,6 +978,7 @@ if run_btn:
                         "genes": count_gff_features(regions_gff),
                         "common_snps": len(snp_records),
                         "guides_with_common_snp_overlap": len({(x["pool"], x["guide"]) for x in guide_snp_overlaps}),
+                        "guides_with_common_snp_in_pam": len({(x["pool"], x["guide"]) for x in pam_snp_overlaps}),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
