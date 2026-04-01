@@ -1,5 +1,6 @@
 import io
 import json
+import math
 import re
 import subprocess
 import tempfile
@@ -407,26 +408,39 @@ def parse_gff_features(path: Path):
 
 
 def find_guide_snp_overlaps(guide_gff_paths, snp_records):
-    overlaps = []
+    guide_overlaps = []
+    pam_overlaps = []
     for pool_name, gff_path in guide_gff_paths:
         for feat in parse_gff_features(gff_path):
             guide_name = feat["attrs"].get("Name") or feat["attrs"].get("label") or feat["attrs"].get("ID") or "guide"
+            pam_interval = guide_pam_interval(feat)
             for snp in snp_records:
+                maf_summary = summarize_minor_allele_freq(
+                    snp.get("minorAlleleFreq", ""),
+                    snp.get("freqSourceCount", ""),
+                )
+                common_info = {
+                    "pool": pool_name,
+                    "guide": guide_name,
+                    "guide_start1": feat["start1"],
+                    "guide_end1": feat["end1"],
+                    "guide_strand": feat["strand"],
+                    "snp": snp["name"],
+                    "snp_local_start1": snp["local_start1"],
+                    "snp_local_end1": snp["local_end1"],
+                    "snp_genomic_coord": f"{snp['chrom']}:{snp['genomic_start1']}-{snp['genomic_end1']}",
+                    "maf_summary": maf_summary,
+                }
                 if snp["local_start1"] <= feat["end1"] and snp["local_end1"] >= feat["start1"]:
-                    overlaps.append(
-                        {
-                            "pool": pool_name,
-                            "guide": guide_name,
-                            "guide_start1": feat["start1"],
-                            "guide_end1": feat["end1"],
-                            "snp": snp["name"],
-                            "snp_local_start1": snp["local_start1"],
-                            "snp_local_end1": snp["local_end1"],
-                            "snp_genomic_coord": f"{snp['chrom']}:{snp['genomic_start1']}-{snp['genomic_end1']}",
-                            "minorAlleleFreq": snp.get("minorAlleleFreq", ""),
-                        }
-                    )
-    return overlaps
+                    guide_overlaps.append(common_info.copy())
+                if pam_interval is not None:
+                    pam_start1, pam_end1 = pam_interval
+                    if snp["local_start1"] <= pam_end1 and snp["local_end1"] >= pam_start1:
+                        pam_info = common_info.copy()
+                        pam_info["pam_start1"] = pam_start1
+                        pam_info["pam_end1"] = pam_end1
+                        pam_overlaps.append(pam_info)
+    return guide_overlaps, pam_overlaps
 
 
 def write_snp_augmented_outputs(locus_dir: Path, ref_path: Path, combined_gff: Path, snp_gff_text: str):
