@@ -42,6 +42,7 @@ The app then runs:
 COORD_RE = re.compile(r"^(?:chr)?([A-Za-z0-9_]+):(\d+)-(\d+)$")
 CANONICAL_CHROMS = {str(i) for i in range(1, 23)} | {"X", "Y", "M"}
 GENE_FLANK_BP = 20000
+UCSC_COMMON_SNP_TRACK = "dbSnp155Common"
 
 
 def run_cmd(cmd, cwd: Path):
@@ -265,6 +266,192 @@ def fetch_ensembl_gene_overlaps(chrom_no_chr: str, start1: int, end1: int):
     if not isinstance(data, list):
         stop_with_error(f"Unexpected Ensembl response for region {region}.")
     return data
+
+
+def _extract_track_records(obj, track_name: str):
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        if track_name in obj and isinstance(obj[track_name], list):
+            return obj[track_name]
+        for value in obj.values():
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                return value
+    return []
+
+
+def fetch_ucsc_common_snps(chrom_no_chr: str, start1: int, end1: int):
+    chrom_ucsc = f"chr{chrom_no_chr}"
+    start0 = start1 - 1
+    url = (
+        "https://api.genome.ucsc.edu/getData/track"
+        f"?genome=hg38;track={UCSC_COMMON_SNP_TRACK};chrom={chrom_ucsc};start={start0};end={end1}"
+    )
+    data = http_get_json(url, headers={"Content-Type": "application/json"})
+    records = _extract_track_records(data, UCSC_COMMON_SNP_TRACK)
+    if not isinstance(records, list):
+        return []
+    return records
+
+
+def ucsc_common_snps_to_local_gff3(snps, chrom_no_chr: str, start1: int, end1: int, local_seqid: str):
+    lines = ["##gff-version 3"]
+    local_records = []
+    locus_start0 = start1 - 1
+
+    for snp in snps:
+        chrom_start0 = snp.get("chromStart")
+        chrom_end1 = snp.get("chromEnd")
+        if chrom_start0 is None or chrom_end1 is None:
+            continue
+
+        chrom_start0 = int(chrom_start0)
+        chrom_end1 = int(chrom_end1)
+        local_start1 = chrom_start0 - locus_start0 + 1
+        local_end1 = chrom_end1 - locus_start0
+        if local_start1 < 1 or local_end1 < local_start1:
+            continue
+
+        snp_id = str(snp.get("name") or f"snp_{chrom_no_chr}_{chrom_start0+1}")
+        ref = sanitize_attr_value(snp.get("ref") or "")
+        alts = sanitize_attr_value(snp.get("alts") or "")
+        snp_class = sanitize_attr_value(snp.get("class") or "")
+        maf = sanitize_attr_value(snp.get("minorAlleleFreq") or "")
+        minor = sanitize_attr_value(snp.get("minorAllele") or "")
+        major = sanitize_attr_value(snp.get("majorAllele") or "")
+
+        attrs = [
+            f"ID={sanitize_attr_value(snp_id)}",
+            f"Name={sanitize_attr_value(snp_id)}",
+            f"label={sanitize_attr_value(snp_id)}",
+            "source=UCSC_common_dbSNP",
+            "genome=hg38",
+            f"orig_coord={chrom_no_chr}:{chrom_start0+1}-{chrom_end1}",
+        ]
+        if ref:
+            attrs.append(f"ref={ref}")
+        if alts:
+            attrs.append(f"alts={alts}")
+        if snp_class:
+            attrs.append(f"class={snp_class}")
+        if maf:
+            attrs.append(f"minorAlleleFreq={maf}")
+        if major:
+            attrs.append(f"majorAllele={major}")
+        if minor:
+            attrs.append(f"minorAllele={minor}")
+
+        lines.append(
+            "\t".join(
+                [
+                    local_seqid,
+                    "UCSC",
+                    "variation",
+                    str(local_start1),
+                    str(local_end1),
+                    ".",
+                    ".",
+                    ".",
+                    ";".join(attrs),
+                ]
+            )
+        )
+
+        local_records.append(
+            {
+                "name": snp_id,
+                "local_start1": local_start1,
+                "local_end1": local_end1,
+                "chrom": chrom_no_chr,
+                "genomic_start1": chrom_start0 + 1,
+                "genomic_end1": chrom_end1,
+                "ref": str(snp.get("ref") or ""),
+                "alts": str(snp.get("alts") or ""),
+                "minorAlleleFreq": str(snp.get("minorAlleleFreq") or ""),
+            }
+        )
+
+    return "\n".join(lines) + "\n", local_records
+
+
+def parse_gff_features(path: Path):
+    features = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) < 9:
+                continue
+            attrs = {}
+            for item in cols[8].split(";"):
+                if not item:
+                    continue
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    attrs[k] = v
+            features.append(
+                {
+                    "seqid": cols[0],
+                    "source": cols[1],
+                    "type": cols[2],
+                    "start1": int(cols[3]),
+                    "end1": int(cols[4]),
+                    "score": cols[5],
+                    "strand": cols[6],
+                    "phase": cols[7],
+                    "attrs": attrs,
+                }
+            )
+    return features
+
+
+def find_guide_snp_overlaps(guide_gff_paths, snp_records):
+    overlaps = []
+    for pool_name, gff_path in guide_gff_paths:
+        for feat in parse_gff_features(gff_path):
+            guide_name = feat["attrs"].get("Name") or feat["attrs"].get("label") or feat["attrs"].get("ID") or "guide"
+            for snp in snp_records:
+                if snp["local_start1"] <= feat["end1"] and snp["local_end1"] >= feat["start1"]:
+                    overlaps.append(
+                        {
+                            "pool": pool_name,
+                            "guide": guide_name,
+                            "guide_start1": feat["start1"],
+                            "guide_end1": feat["end1"],
+                            "snp": snp["name"],
+                            "snp_local_start1": snp["local_start1"],
+                            "snp_local_end1": snp["local_end1"],
+                            "snp_genomic_coord": f"{snp['chrom']}:{snp['genomic_start1']}-{snp['genomic_end1']}",
+                            "minorAlleleFreq": snp.get("minorAlleleFreq", ""),
+                        }
+                    )
+    return overlaps
+
+
+def write_snp_augmented_outputs(locus_dir: Path, ref_path: Path, combined_gff: Path, snp_gff_text: str):
+    snp_gff = locus_dir / "common_snps.gff3"
+    combined_snp_gff = locus_dir / "combined_with_common_snps.gff3"
+    gbk_snp_path = locus_dir / "custom_with_common_snps.gbk"
+
+    snp_gff.write_text(snp_gff_text, encoding="utf-8")
+    combined = ["##gff-version 3"]
+    combined.append(strip_header(combined_gff.read_text(encoding="utf-8")))
+    combined.append(strip_header(snp_gff_text))
+    combined_snp_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
+
+    try:
+        gff_fasta_to_genbank(str(combined_snp_gff), str(ref_path), str(gbk_snp_path))
+    except Exception as e:
+        st.error("Failed at: Common SNP GenBank conversion")
+        st.exception(e)
+        st.stop()
+
+    return {
+        "snp_gff": snp_gff,
+        "combined_snp_gff": combined_snp_gff,
+        "gbk_snp_path": gbk_snp_path,
+    }
 
 
 def sanitize_attr_value(s: str) -> str:
@@ -667,10 +854,17 @@ if run_btn:
                 log(f"[{locus_slug}] fetch Ensembl gene annotations")
                 genes = fetch_ensembl_gene_overlaps(chrom_no_chr, start1, end1)
 
+                log(f"[{locus_slug}] fetch UCSC common SNPs")
+                raw_snps = fetch_ucsc_common_snps(chrom_no_chr, start1, end1)
+
                 log(f"[{locus_slug}] convert Ensembl genes -> local GFF3")
                 regions_gff.write_text(
                     genes_to_local_gff3(genes, chrom_no_chr, start1, end1, local_seqid),
                     encoding="utf-8",
+                )
+
+                snp_gff_text, snp_records = ucsc_common_snps_to_local_gff3(
+                    raw_snps, chrom_no_chr, start1, end1, local_seqid
                 )
 
                 outputs = run_single_locus_pipeline(
@@ -683,16 +877,41 @@ if run_btn:
                     log=lambda msg, prefix=locus_slug: log(f"[{prefix}] {msg}"),
                 )
 
+                snp_outputs = write_snp_augmented_outputs(
+                    locus_dir=locus_dir,
+                    ref_path=ref_path,
+                    combined_gff=outputs["combined_gff"],
+                    snp_gff_text=snp_gff_text,
+                )
+
+                guide_snp_overlaps = find_guide_snp_overlaps(
+                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
+                    snp_records,
+                )
+                if guide_snp_overlaps:
+                    warning_lines = [
+                        f"{item['guide']} ({item['pool']}) overlaps {item['snp']} at {item['snp_genomic_coord']}"
+                        + (f" [minorAlleleFreq={item['minorAlleleFreq']}]" if item['minorAlleleFreq'] else "")
+                        for item in guide_snp_overlaps[:10]
+                    ]
+                    extra = "" if len(guide_snp_overlaps) <= 10 else f"\n... plus {len(guide_snp_overlaps) - 10} more overlap(s)."
+                    st.warning(
+                        f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:\n" + "\n".join(warning_lines) + extra
+                    )
+
                 summary_rows.append(
                     {
                         "locus": f"{chrom_no_chr}:{start1}-{end1}",
                         "seq_length_bp": len(seq),
                         "genes": count_gff_features(regions_gff),
+                        "common_snps": len(snp_records),
+                        "guides_with_common_snp_overlap": len({(x["pool"], x["guide"]) for x in guide_snp_overlaps}),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
                         "odd_tiles": count_gff_features(outputs["odd_tiles"]),
                         "genbank_file": f"{locus_slug}/custom.gbk",
+                        "snp_genbank_file": f"{locus_slug}/custom_with_common_snps.gbk",
                     }
                 )
 
@@ -711,5 +930,5 @@ if run_btn:
 
             if keep_intermediates:
                 st.caption(
-                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, and custom.gbk."
+                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, custom.gbk, common_snps.gff3, combined_with_common_snps.gff3, and custom_with_common_snps.gbk."
                 )
