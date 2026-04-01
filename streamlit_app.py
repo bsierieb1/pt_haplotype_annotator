@@ -964,7 +964,7 @@ if run_btn:
                     n_total = len(guide_snp_overlaps) + len(pam_snp_overlaps)
                     shown = min(len(guide_snp_overlaps), 10) + min(len(pam_snp_overlaps), 10)
                     extra = "" if n_total <= shown else f"
-... plus {n_total - shown} more overlap(s)."
+                    ... plus {n_total - shown} more overlap(s)."
                     st.warning(
                         f"Common SNP warning for {chrom_no_chr}:{start1}-{end1}:
 " + "
