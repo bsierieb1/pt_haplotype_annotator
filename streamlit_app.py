@@ -5,11 +5,17 @@ import re
 import subprocess
 import tempfile
 import zipfile
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import streamlit as st
+
+from Bio import SeqIO
+from dna_features_viewer import BiopythonTranslator
 
 from gff_to_genbank_patched import gff_fasta_to_genbank
 
@@ -487,6 +493,162 @@ def find_guides_with_non_ngg_pam(guide_gff_paths, ref_seq: str):
     return warnings
 
 
+class PureTargetGenBankTranslator(BiopythonTranslator):
+    def compute_feature_label(self, feature):
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        for key in ("label", "Name", "name", "gene"):
+            value = qualifiers.get(key)
+            if value:
+                return str(value[0])[:40]
+        feature_id = qualifiers.get("ID")
+        if feature_id:
+            return str(feature_id[0])[:40]
+        return None
+
+    def compute_feature_color(self, feature):
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        source = str((qualifiers.get("source") or [""])[0]).lower()
+        feature_type = str(getattr(feature, "type", "")).lower()
+
+        if source == "ensembl":
+            return "#c7cedb"
+        if source == "bowtie":
+            name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).lower()
+            if "even" in name:
+                return "#4f81bd"
+            if "odd" in name:
+                return "#c0504d"
+            return "#6d9eeb"
+        if feature_type == "misc_feature":
+            name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).upper()
+            if name == "TILE":
+                return "#9bbb59"
+        return "#b7b7b7"
+
+    def compute_feature_box_color(self, feature):
+        return self.compute_feature_color(feature)
+
+    def compute_feature_linewidth(self, feature):
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        source = str((qualifiers.get("source") or [""])[0]).lower()
+        if source == "ensembl":
+            return 0.8
+        if source == "bowtie":
+            return 1.0
+        return 0.6
+
+    def compute_feature_fontdict(self, feature):
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        source = str((qualifiers.get("source") or [""])[0]).lower()
+        if source == "ensembl":
+            return {"size": 8}
+        if source == "bowtie":
+            return {"size": 7}
+        return {"size": 7}
+
+    def compute_filtered_features(self, features):
+        kept = []
+        for feature in features:
+            qualifiers = getattr(feature, "qualifiers", {}) or {}
+            source = str((qualifiers.get("source") or [""])[0]).lower()
+            feature_type = str(getattr(feature, "type", "")).lower()
+
+            if source in {"ensembl", "bowtie"}:
+                kept.append(feature)
+                continue
+
+            if feature_type == "misc_feature":
+                name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).upper()
+                if name == "TILE":
+                    kept.append(feature)
+
+        return kept
+
+
+def estimate_record_lines(seq_len: int) -> int:
+    if seq_len <= 30000:
+        return 1
+    if seq_len <= 80000:
+        return 2
+    if seq_len <= 150000:
+        return 3
+    return 4
+
+
+def render_genbank_preview_png(gbk_path: Path, out_path: Path):
+    with open(gbk_path, "r", encoding="utf-8") as handle:
+        record = SeqIO.read(handle, "genbank")
+
+    translator = PureTargetGenBankTranslator()
+    graphic_record = translator.translate_record(record)
+
+    line_count = estimate_record_lines(len(record.seq))
+    figure_width = 14
+    figure_height = 2.6 + (line_count - 1) * 1.35
+
+    fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
+    if line_count == 1:
+        graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    else:
+        graphic_record.plot_on_multiple_lines(
+            ax=ax,
+            nucl_per_line=math.ceil(len(record.seq) / line_count),
+            strand_in_label_threshold=8,
+        )
+    ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
+    preview_path = locus_dir / "custom.png"
+    try:
+        render_genbank_preview_png(gbk_path, preview_path)
+    except Exception as e:
+        return None, str(e)
+    return preview_path, None
+
+
+def show_preview_section(preview_path: Path | None, *, title: str | None = None, warning: str | None = None):
+    if title:
+        st.subheader(title)
+    if warning:
+        st.warning(f"Annotation outputs were generated, but preview rendering failed: {warning}")
+        return
+    if preview_path is None or not preview_path.exists():
+        return
+    st.image(str(preview_path), caption=preview_path.name, use_container_width=True)
+
+
+def render_multi_locus_preview_gallery(preview_rows: list[dict]):
+    available = [row for row in preview_rows if row.get("preview_path") and Path(row["preview_path"]).exists()]
+    if not available:
+        failed = [row for row in preview_rows if row.get("preview_error")]
+        if failed:
+            st.warning("Annotated files were created, but preview PNGs could not be rendered for any locus.")
+        return
+
+    st.subheader("Locus preview")
+    labels = [row["locus"] for row in available]
+    selected_label = st.selectbox("Choose locus preview", labels)
+    selected = next(row for row in available if row["locus"] == selected_label)
+    st.image(str(selected["preview_path"]), caption=f"{selected_label} preview", use_container_width=True)
+    st.download_button(
+        f"Download preview PNG ({selected_label})",
+        data=Path(selected["preview_path"]).read_bytes(),
+        file_name=f"{selected['locus_slug']}_preview.png",
+        mime="image/png",
+        key=f"download_preview_{selected['locus_slug']}",
+    )
+
+    failed = [row for row in preview_rows if row.get("preview_error")]
+    for row in failed[:5]:
+        st.warning(f"Preview rendering failed for {row['locus']}: {row['preview_error']}")
+    if len(failed) > 5:
+        st.warning(f"... and {len(failed) - 5} more preview rendering failures")
+
+
 def parse_gff_features(path: Path):
     features = []
     with open(path, "r", encoding="utf-8") as fh:
@@ -737,6 +899,7 @@ def run_single_locus_pipeline(
     odd_tiles = locus_dir / "between_regions_odd.gff3"
     combined_gff = locus_dir / "combined.gff3"
     gbk_path = locus_dir / "custom.gbk"
+    preview_png_path = locus_dir / "custom.png"
 
     log("bowtie-build")
     rc, out, err = run_cmd(["bowtie-build", str(ref_path), "refidx"], locus_dir)
@@ -803,6 +966,8 @@ def run_single_locus_pipeline(
         st.exception(e)
         st.stop()
 
+    preview_path, preview_error = maybe_render_genbank_preview(locus_dir, gbk_path)
+
     return {
         "even_mapped": even_mapped,
         "odd_mapped": odd_mapped,
@@ -812,6 +977,8 @@ def run_single_locus_pipeline(
         "odd_tiles": odd_tiles,
         "combined_gff": combined_gff,
         "gbk_path": gbk_path,
+        "preview_png_path": preview_path or preview_png_path,
+        "preview_error": preview_error,
     }
 
 
@@ -914,6 +1081,19 @@ if run_btn:
                 mime="text/plain",
             )
 
+            show_preview_section(
+                outputs.get("preview_png_path"),
+                title="Locus preview",
+                warning=outputs.get("preview_error"),
+            )
+            if outputs.get("preview_png_path") and Path(outputs["preview_png_path"]).exists():
+                st.download_button(
+                    "Download preview PNG (custom.png)",
+                    data=Path(outputs["preview_png_path"]).read_bytes(),
+                    file_name="custom.png",
+                    mime="image/png",
+                )
+
             if keep_intermediates:
                 st.subheader("Intermediates")
                 st.download_button(
@@ -959,6 +1139,7 @@ if run_btn:
             results_root.mkdir(parents=True, exist_ok=True)
 
             summary_rows = []
+            preview_rows = []
 
             for idx, (chrom_no_chr, start1, end1) in enumerate(loci, start=1):
                 locus_slug = make_locus_slug(chrom_no_chr, start1, end1)
@@ -1065,7 +1246,16 @@ if run_btn:
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
                         "odd_tiles": count_gff_features(outputs["odd_tiles"]),
                         "genbank_file": f"{locus_slug}/custom.gbk",
+                        "preview_png_file": f"{locus_slug}/custom.png",
                         "snp_genbank_file": f"{locus_slug}/custom_with_common_snps.gbk",
+                    }
+                )
+                preview_rows.append(
+                    {
+                        "locus": f"{chrom_no_chr}:{start1}-{end1}",
+                        "locus_slug": locus_slug,
+                        "preview_path": outputs.get("preview_png_path"),
+                        "preview_error": outputs.get("preview_error"),
                     }
                 )
 
@@ -1074,6 +1264,7 @@ if run_btn:
             st.success(f"Done! Processed {len(summary_rows)} locus/loci.")
             st.subheader("Per-locus summary")
             st.dataframe(summary_rows, use_container_width=True)
+            render_multi_locus_preview_gallery(preview_rows)
 
             st.download_button(
                 "Download all locus outputs (.zip)",
@@ -1084,5 +1275,5 @@ if run_btn:
 
             if keep_intermediates:
                 st.caption(
-                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, custom.gbk, common_snps.gff3, combined_with_common_snps.gff3, and custom_with_common_snps.gbk."
+                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, custom.gbk, custom.png, common_snps.gff3, combined_with_common_snps.gff3, and custom_with_common_snps.gbk."
                 )
