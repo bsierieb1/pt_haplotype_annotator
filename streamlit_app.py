@@ -606,7 +606,7 @@ def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     try:
         render_genbank_preview_png(gbk_path, preview_path)
     except Exception as e:
-        return None, str(e)
+        return None, f"{type(e).__name__}: {e}"
     return preview_path, None
 
 
@@ -627,6 +627,10 @@ def render_multi_locus_preview_gallery(preview_rows: list[dict]):
         failed = [row for row in preview_rows if row.get("preview_error")]
         if failed:
             st.warning("Annotated files were created, but preview PNGs could not be rendered for any locus.")
+            for row in failed[:5]:
+                st.warning(f"Preview rendering failed for {row['locus']}: {row['preview_error']}")
+            if len(failed) > 5:
+                st.warning(f"... and {len(failed) - 5} more preview rendering failures")
         return
 
     st.subheader("Locus preview")
