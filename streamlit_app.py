@@ -586,19 +586,23 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     figure_width = 14
     figure_height = 2.6 + (line_count - 1) * 1.35
 
-    fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
     if line_count == 1:
+        fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
         graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
     else:
-        graphic_record.plot_on_multiple_lines(
-            ax=ax,
+        ax = graphic_record.plot_on_multiple_lines(
             nucl_per_line=math.ceil(len(record.seq) / line_count),
             strand_in_label_threshold=8,
         )
-    ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+        fig = ax.figure
+        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
 
 def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
