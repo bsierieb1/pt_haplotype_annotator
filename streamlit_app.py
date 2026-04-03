@@ -1,21 +1,14 @@
 import io
 import json
-import math
 import re
 import subprocess
 import tempfile
 import zipfile
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import streamlit as st
-
-from Bio import SeqIO
-from dna_features_viewer import BiopythonTranslator
 
 from gff_to_genbank_patched import gff_fasta_to_genbank
 
@@ -556,16 +549,6 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
         return kept
 
 
-def estimate_record_lines(seq_len: int) -> int:
-    if seq_len <= 30000:
-        return 1
-    if seq_len <= 80000:
-        return 2
-    if seq_len <= 150000:
-        return 3
-    return 4
-
-
 def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     with open(gbk_path, "r", encoding="utf-8") as handle:
         record = SeqIO.read(handle, "genbank")
@@ -573,40 +556,16 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     translator = PureTargetGenBankTranslator()
     graphic_record = translator.translate_record(record)
 
-    line_count = estimate_record_lines(len(record.seq))
-    figure_width = 14
-    figure_height = 2.6 + (line_count - 1) * 1.35
+    seq_len = len(record.seq)
+    figure_width = max(14, min(40, seq_len / 2500))
+    figure_height = 2.6
 
-    if line_count == 1:
-        fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
-        graphic_record.plot(ax=ax, strand_in_label_threshold=8)
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-    else:
-        plotted = graphic_record.plot_on_multiple_lines(
-            nucl_per_line=math.ceil(len(record.seq) / line_count),
-            strand_in_label_threshold=8,
-        )
+    fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
+    graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
-        if hasattr(plotted, "figure"):
-            fig = plotted.figure
-        elif isinstance(plotted, tuple) and len(plotted) > 0:
-            first = plotted[0]
-            if isinstance(first, (list, tuple)) and len(first) > 0 and hasattr(first[0], "figure"):
-                fig = first[0].figure
-            elif hasattr(first, "figure"):
-                fig = first.figure
-            else:
-                raise TypeError(f"Unexpected return value from plot_on_multiple_lines: {type(plotted).__name__}")
-        elif isinstance(plotted, list) and len(plotted) > 0 and hasattr(plotted[0], "figure"):
-            fig = plotted[0].figure
-        else:
-            raise TypeError(f"Unexpected return value from plot_on_multiple_lines: {type(plotted).__name__}")
-
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
 
 def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     preview_path = locus_dir / "custom.png"
@@ -615,6 +574,25 @@ def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
     return preview_path, None
+
+
+def normalize_non_stranded_tiles_in_genbank(gbk_path: Path):
+    with open(gbk_path, "r", encoding="utf-8") as handle:
+        record = SeqIO.read(handle, "genbank")
+
+    changed = False
+    for feature in record.features:
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        feature_type = str(getattr(feature, "type", "")).lower()
+        name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).upper()
+        if feature_type == "misc_feature" and name == "TILE":
+            if getattr(feature.location, "strand", None) is not None:
+                feature.location.strand = None
+                changed = True
+
+    if changed:
+        with open(gbk_path, "w", encoding="utf-8") as handle:
+            SeqIO.write(record, handle, "genbank")
 
 
 def show_preview_section(preview_path: Path | None, *, title: str | None = None, warning: str | None = None):
@@ -634,10 +612,6 @@ def render_multi_locus_preview_gallery(preview_rows: list[dict]):
         failed = [row for row in preview_rows if row.get("preview_error")]
         if failed:
             st.warning("Annotated files were created, but preview PNGs could not be rendered for any locus.")
-            for row in failed[:5]:
-                st.warning(f"Preview rendering failed for {row['locus']}: {row['preview_error']}")
-            if len(failed) > 5:
-                st.warning(f"... and {len(failed) - 5} more preview rendering failures")
         return
 
     st.subheader("Locus preview")
@@ -977,6 +951,7 @@ def run_single_locus_pipeline(
         st.exception(e)
         st.stop()
 
+    normalize_non_stranded_tiles_in_genbank(gbk_path)
     preview_path, preview_error = maybe_render_genbank_preview(locus_dir, gbk_path)
 
     return {
