@@ -537,15 +537,6 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
             return 1.0
         return 0.6
 
-#     def compute_feature_fontdict(self, feature):
-#         qualifiers = getattr(feature, "qualifiers", {}) or {}
-#         source = str((qualifiers.get("source") or [""])[0]).lower()
-#         if source == "ensembl":
-#             return {"size": 8}
-#         if source == "bowtie":
-#             return {"size": 7}
-#         return {"size": 7}
-
     def compute_filtered_features(self, features):
         kept = []
         for feature in features:
@@ -589,21 +580,33 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     if line_count == 1:
         fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
         graphic_record.plot(ax=ax, strand_in_label_threshold=8)
-        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
         fig.tight_layout()
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
     else:
-        ax = graphic_record.plot_on_multiple_lines(
+        plotted = graphic_record.plot_on_multiple_lines(
             nucl_per_line=math.ceil(len(record.seq) / line_count),
             strand_in_label_threshold=8,
         )
-        fig = ax.figure
-        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
+
+        if hasattr(plotted, "figure"):
+            fig = plotted.figure
+        elif isinstance(plotted, tuple) and len(plotted) > 0:
+            first = plotted[0]
+            if isinstance(first, (list, tuple)) and len(first) > 0 and hasattr(first[0], "figure"):
+                fig = first[0].figure
+            elif hasattr(first, "figure"):
+                fig = first.figure
+            else:
+                raise TypeError(f"Unexpected return value from plot_on_multiple_lines: {type(plotted).__name__}")
+        elif isinstance(plotted, list) and len(plotted) > 0 and hasattr(plotted[0], "figure"):
+            fig = plotted[0].figure
+        else:
+            raise TypeError(f"Unexpected return value from plot_on_multiple_lines: {type(plotted).__name__}")
+
         fig.tight_layout()
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
-
 
 def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     preview_path = locus_dir / "custom.png"
