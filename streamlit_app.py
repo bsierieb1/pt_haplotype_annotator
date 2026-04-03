@@ -8,7 +8,13 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import streamlit as st
+
+from Bio import SeqIO
+from dna_features_viewer import BiopythonTranslator
 
 from gff_to_genbank_patched import gff_fasta_to_genbank
 
