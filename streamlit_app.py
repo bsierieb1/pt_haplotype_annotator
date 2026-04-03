@@ -537,14 +537,14 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
             return 1.0
         return 0.6
 
-    def compute_feature_fontdict(self, feature):
-        qualifiers = getattr(feature, "qualifiers", {}) or {}
-        source = str((qualifiers.get("source") or [""])[0]).lower()
-        if source == "ensembl":
-            return {"size": 8}
-        if source == "bowtie":
-            return {"size": 7}
-        return {"size": 7}
+#     def compute_feature_fontdict(self, feature):
+#         qualifiers = getattr(feature, "qualifiers", {}) or {}
+#         source = str((qualifiers.get("source") or [""])[0]).lower()
+#         if source == "ensembl":
+#             return {"size": 8}
+#         if source == "bowtie":
+#             return {"size": 7}
+#         return {"size": 7}
 
     def compute_filtered_features(self, features):
         kept = []
@@ -589,6 +589,7 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     if line_count == 1:
         fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
         graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
         fig.tight_layout()
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
@@ -598,6 +599,7 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
             strand_in_label_threshold=8,
         )
         fig = ax.figure
+        ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
         fig.tight_layout()
         fig.savefig(out_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
