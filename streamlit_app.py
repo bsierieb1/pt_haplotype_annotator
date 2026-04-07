@@ -564,7 +564,7 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
 
     seq_len = len(record.seq)
     figure_width = max(14, min(40, seq_len / 2500))
-    figure_height = 2.6
+    figure_height = 4.5
 
     fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
     graphic_record.plot(ax=ax, strand_in_label_threshold=8)
