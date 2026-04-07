@@ -34,7 +34,7 @@ Choose one input mode:
 - **Upload custom target region FASTA**
 
 The app then runs:
-1) Bowtie exact mapping for even + odd guides
+1) Bowtie exact mapping for required guide set and optional odd guide set
 2) Tile annotation (downstream only, <=20 kb by default, excludes regions containing N)
 3) Combine all annotations
 4) Locus FASTA + annotation GFF3s -> GenBank
@@ -878,7 +878,7 @@ def run_single_locus_pipeline(
     ref_path: Path,
     regions_gff: Path,
     even_path: Path,
-    odd_path: Path,
+    odd_path: Path | None,
     max_between_len: int,
     log,
 ):
@@ -898,7 +898,8 @@ def run_single_locus_pipeline(
         fail("bowtie-build", out, err)
 
     map_guides_to_gff(even_path, even_mapped, even_gff, "even", locus_dir, log)
-    map_guides_to_gff(odd_path, odd_mapped, odd_gff, "odd", locus_dir, log)
+    if odd_path is not None:
+        map_guides_to_gff(odd_path, odd_mapped, odd_gff, "odd", locus_dir, log)
 
     log("predict even tiles")
     rc, out, err = run_cmd(
@@ -920,33 +921,36 @@ def run_single_locus_pipeline(
         fail("make_between_regions.py (even)", out, err)
     log(out.strip() or "between even done")
 
-    log("predict odd tiles")
-    rc, out, err = run_cmd(
-        [
-            "python",
-            str(BETWEEN_SCRIPT),
-            "--gff",
-            str(odd_gff),
-            "--fasta",
-            str(ref_path),
-            "--out",
-            str(odd_tiles),
-            "--maxlen",
-            str(int(max_between_len)),
-        ],
-        locus_dir,
-    )
-    if rc != 0:
-        fail("make_between_regions.py (odd)", out, err)
-    log(out.strip() or "between odd done")
+    if odd_path is not None:
+        log("predict odd tiles")
+        rc, out, err = run_cmd(
+            [
+                "python",
+                str(BETWEEN_SCRIPT),
+                "--gff",
+                str(odd_gff),
+                "--fasta",
+                str(ref_path),
+                "--out",
+                str(odd_tiles),
+                "--maxlen",
+                str(int(max_between_len)),
+            ],
+            locus_dir,
+        )
+        if rc != 0:
+            fail("make_between_regions.py (odd)", out, err)
+        log(out.strip() or "between odd done")
 
     log("combine GFF3s")
     combined = ["##gff-version 3"]
     combined.append(strip_header(regions_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(even_gff.read_text(encoding="utf-8")))
-    combined.append(strip_header(odd_gff.read_text(encoding="utf-8")))
+    if odd_path is not None:
+        combined.append(strip_header(odd_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(even_tiles.read_text(encoding="utf-8")))
-    combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
+    if odd_path is not None:
+        combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
     combined_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
 
     log("GFF3+FASTA -> GenBank")
@@ -962,11 +966,11 @@ def run_single_locus_pipeline(
 
     return {
         "even_mapped": even_mapped,
-        "odd_mapped": odd_mapped,
+        "odd_mapped": odd_mapped if odd_path is not None else None,
         "even_gff": even_gff,
-        "odd_gff": odd_gff,
+        "odd_gff": odd_gff if odd_path is not None else None,
         "even_tiles": even_tiles,
-        "odd_tiles": odd_tiles,
+        "odd_tiles": odd_tiles if odd_path is not None else None,
         "combined_gff": combined_gff,
         "gbk_path": gbk_path,
         "preview_png_path": preview_path or preview_png_path,
@@ -996,8 +1000,8 @@ else:
     ref_fa = None
     regions_bed = None
 
-guides_even = st.file_uploader("Guides EVEN FASTA (guides_even.fa)", type=["fa", "fasta", "fna"])
-guides_odd = st.file_uploader("Guides ODD FASTA (guides_odd.fa)", type=["fa", "fasta", "fna"])
+guides_even = st.file_uploader("Guides FASTA or even guides FASTA", type=["fa", "fasta", "fna"])
+guides_odd = st.file_uploader("Odd guides FASTA - optional", type=["fa", "fasta", "fna"])
 
 with st.expander("Advanced", expanded=False):
     max_between_len = st.number_input(
@@ -1006,9 +1010,9 @@ with st.expander("Advanced", expanded=False):
     keep_intermediates = st.checkbox("Show & allow download of intermediate files", value=False)
 
 if input_mode == "Use uploaded custom reference":
-    ready = bool(ref_fa and regions_bed and guides_even and guides_odd)
+    ready = bool(ref_fa and regions_bed and guides_even)
 else:
-    ready = bool(locus_coords and guides_even and guides_odd)
+    ready = bool(locus_coords and guides_even)
 
 run_btn = st.button("Run", type="primary", disabled=not ready)
 
@@ -1022,9 +1026,10 @@ if run_btn:
 
         # Shared guide files
         even_path = wd / "guides_even.fa"
-        odd_path = wd / "guides_odd.fa"
+        odd_path = wd / "guides_odd.fa" if guides_odd is not None else None
         even_path.write_bytes(guides_even.getvalue())
-        odd_path.write_bytes(guides_odd.getvalue())
+        if odd_path is not None:
+            odd_path.write_bytes(guides_odd.getvalue())
 
         log_area = st.empty()
         logs = []
@@ -1098,31 +1103,34 @@ if run_btn:
                     outputs["even_gff"].read_bytes(),
                     file_name="guides_even.gff3",
                 )
-                st.download_button(
-                    "guides_odd.gff3",
-                    outputs["odd_gff"].read_bytes(),
-                    file_name="guides_odd.gff3",
-                )
+                if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
+                    st.download_button(
+                        "guides_odd.gff3",
+                        outputs["odd_gff"].read_bytes(),
+                        file_name="guides_odd.gff3",
+                    )
                 st.download_button(
                     "between_regions_even.gff3",
                     outputs["even_tiles"].read_bytes(),
                     file_name="between_regions_even.gff3",
                 )
-                st.download_button(
-                    "between_regions_odd.gff3",
-                    outputs["odd_tiles"].read_bytes(),
-                    file_name="between_regions_odd.gff3",
-                )
+                if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists():
+                    st.download_button(
+                        "between_regions_odd.gff3",
+                        outputs["odd_tiles"].read_bytes(),
+                        file_name="between_regions_odd.gff3",
+                    )
                 st.download_button(
                     "guides_even.mapped",
                     outputs["even_mapped"].read_bytes(),
                     file_name="guides_even.mapped",
                 )
-                st.download_button(
-                    "guides_odd.mapped",
-                    outputs["odd_mapped"].read_bytes(),
-                    file_name="guides_odd.mapped",
-                )
+                if outputs.get("odd_mapped") is not None and Path(outputs["odd_mapped"]).exists():
+                    st.download_button(
+                        "guides_odd.mapped",
+                        outputs["odd_mapped"].read_bytes(),
+                        file_name="guides_odd.mapped",
+                    )
 
         else:
             # Multi-locus hg38 mode
@@ -1183,12 +1191,16 @@ if run_btn:
                     snp_gff_text=snp_gff_text,
                 )
 
+                guide_gff_paths = [("even", outputs["even_gff"])]
+                if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
+                    guide_gff_paths.append(("odd", outputs["odd_gff"]))
+
                 guide_snp_overlaps, pam_snp_overlaps = find_guide_snp_overlaps(
-                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
+                    guide_gff_paths,
                     snp_records,
                 )
                 non_ngg_pam_warnings = find_guides_with_non_ngg_pam(
-                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
+                    guide_gff_paths,
                     seq,
                 )
                 if guide_snp_overlaps or pam_snp_overlaps:
@@ -1234,9 +1246,9 @@ if run_btn:
                         "genes": count_gff_features(regions_gff),
                         "common_snps": len(snp_records),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
-                        "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
+                        "odd_guide_hits": count_gff_features(outputs["odd_gff"]) if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists() else 0,
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
-                        "odd_tiles": count_gff_features(outputs["odd_tiles"]),
+                        "odd_tiles": count_gff_features(outputs["odd_tiles"]) if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists() else 0,
                         "genbank_file": f"{locus_slug}/custom.gbk",
                         "preview_png_file": f"{locus_slug}/custom.png",
                         "snp_genbank_file": f"{locus_slug}/custom_with_common_snps.gbk",
