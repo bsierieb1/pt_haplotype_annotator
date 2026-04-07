@@ -1,3 +1,4 @@
 streamlit>=1.31
 biopython
 bcbio-gff
+dna_features_viewer

@@ -5,7 +5,7 @@ Not an official PacBio tool.
 
 ## What it does
 
-This Streamlit app maps PureTarget guides, predicts tiles, and generates annotated GFF3 and GenBank outputs.
+This Streamlit app maps PureTarget guides, predicts tiles, generates annotated GFF3 and GenBank outputs, and renders a preview PNG from the non-SNP GenBank file.
 
 ## Input modes
 
@@ -24,6 +24,7 @@ For each locus, the app:
 - predicts tiles
 - adds common SNP annotations from UCSC
 - writes GFF3 and GenBank outputs
+- renders a static PNG preview from the non-SNP GenBank output
 
 It also reports:
 - guides overlapping common SNPs (including common SNPs in the PAM)
@@ -36,7 +37,7 @@ Upload:
 - `guides_even.fa`
 - `guides_odd.fa`
 
-The app converts BED to GFF3, maps guides, predicts tiles, combines annotations, and writes GenBank output.
+The app converts BED to GFF3, maps guides, predicts tiles, combines annotations, writes GFF3 + GenBank output, and renders a PNG preview from the non-SNP GenBank output.
 
 ## Tile logic
 
@@ -53,6 +54,7 @@ Rules:
 Main outputs:
 - `combined.gff3`
 - `custom.gbk`
+- `custom.png`
 
 Optional intermediates:
 - `custom_regions.gff3`
@@ -75,6 +77,7 @@ Typical files per locus:
 - `between_regions_odd.gff3`
 - `combined.gff3`
 - `custom.gbk`
+- `custom.png`
 - `common_snps.gff3`
 - `combined_with_common_snps.gff3`
 - `custom_with_common_snps.gbk`
@@ -89,6 +92,7 @@ Python packages:
 - `streamlit`
 - `biopython`
 - `bcbio-gff`
+- `dna_features_viewer`
 
 ## Main files
 
