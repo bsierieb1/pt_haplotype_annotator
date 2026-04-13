@@ -1000,7 +1000,7 @@ else:
     regions_bed = None
 
 guides_even = st.file_uploader("Guides FASTA (for single-tile design) or even guides FASTA (for multi-tile design)", type=["fa", "fas", "fasta", "fna"])
-guides_odd = st.file_uploader("Odd guides FASTA (for multi-tile design; leave empty for for single-tile design)", type=["fa", "fas", "fasta", "fna"])
+guides_odd = st.file_uploader("Odd guides FASTA (for multi-tile design; leave empty for single-tile design)", type=["fa", "fas", "fasta", "fna"])
 
 with st.expander("Advanced", expanded=False):
     max_between_len = st.number_input(
