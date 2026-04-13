@@ -621,17 +621,16 @@ def render_multi_locus_preview_gallery(preview_rows: list[dict]):
         return
 
     st.subheader("Locus preview")
-    labels = [row["locus"] for row in available]
-    selected_label = st.selectbox("Choose locus preview", labels)
-    selected = next(row for row in available if row["locus"] == selected_label)
-    st.image(str(selected["preview_path"]), caption=f"{selected_label} preview", use_container_width=True)
-    st.download_button(
-        f"Download preview PNG ({selected_label})",
-        data=Path(selected["preview_path"]).read_bytes(),
-        file_name=f"{selected['locus_slug']}_preview.png",
-        mime="image/png",
-        key=f"download_preview_{selected['locus_slug']}",
-    )
+    for row in available:
+        st.markdown(f"**{row['locus']}**")
+        st.image(str(row["preview_path"]), caption=f"{row['locus']} preview", use_container_width=True)
+        st.download_button(
+            f"Download preview PNG ({row['locus']})",
+            data=Path(row["preview_path"]).read_bytes(),
+            file_name=f"{row['locus_slug']}_preview.png",
+            mime="image/png",
+            key=f"download_preview_{row['locus_slug']}",
+        )
 
     failed = [row for row in preview_rows if row.get("preview_error")]
     for row in failed[:5]:
@@ -1000,8 +999,8 @@ else:
     ref_fa = None
     regions_bed = None
 
-guides_even = st.file_uploader("Guides FASTA or even guides FASTA", type=["fa", "fasta", "fna"])
-guides_odd = st.file_uploader("Odd guides FASTA - optional", type=["fa", "fasta", "fna"])
+guides_even = st.file_uploader("Guides EVEN FASTA (guides_even.fa)", type=["fa", "fasta", "fna"])
+guides_odd = st.file_uploader("Guides ODD FASTA (guides_odd.fa) - optional", type=["fa", "fasta", "fna"])
 
 with st.expander("Advanced", expanded=False):
     max_between_len = st.number_input(
