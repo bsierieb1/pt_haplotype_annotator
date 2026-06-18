@@ -94,8 +94,8 @@ def main():
                     continue  # not downstream of this + feature
                 found_any = True
 
-                gs = p["end"] + 1
-                ge = m["start"] - 1
+                gs = p["end"] - 2
+                ge = m["start"] + 2
                 if gs > ge:
                     continue
 
