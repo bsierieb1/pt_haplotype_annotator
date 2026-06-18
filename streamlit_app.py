@@ -708,6 +708,57 @@ def keep_gff_preview_feature(feature: dict) -> bool:
     return False
 
 
+def is_ensembl_exon_feature(feature: dict) -> bool:
+    return (
+        str(feature.get("source") or "").lower() == "ensembl"
+        and str(feature.get("type") or "").lower() == "exon"
+    )
+
+
+def transcript_group_key(feature: dict) -> str | None:
+    if not is_ensembl_exon_feature(feature):
+        return None
+
+    attrs = feature.get("attrs", {}) or {}
+    return attrs.get("transcript_id") or attrs.get("gene") or attrs.get("ID")
+
+
+def feature_bounds0(feature: dict, seq_len: int) -> tuple[int, int] | None:
+    start0 = max(0, int(feature["start1"]) - 1)
+    end0 = min(seq_len, int(feature["end1"]))
+    if end0 <= start0:
+        return None
+    return start0, end0
+
+
+def intervals_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    return a_start < b_end and b_start < a_end
+
+
+def assign_transcript_preview_levels(
+    transcript_spans: dict[str, tuple[int, int]],
+) -> dict[str, int]:
+    levels = {}
+    placed = []
+
+    for key, (start0, end0) in sorted(
+        transcript_spans.items(),
+        key=lambda item: (item[1][0], item[1][1]),
+    ):
+        level = 0
+        while any(
+            placed_level == level
+            and intervals_overlap(start0, end0, placed_start, placed_end)
+            for placed_start, placed_end, placed_level in placed
+        ):
+            level += 1
+
+        levels[key] = level
+        placed.append((start0, end0, level))
+
+    return levels
+
+
 def gff_strand_to_int(strand: str) -> int:
     if strand == "+":
         return 1
@@ -721,15 +772,55 @@ def render_gff_preview_png(gff_path: Path, fasta_path: Path, out_path: Path):
         record = SeqIO.read(handle, "fasta")
 
     seq_len = len(record.seq)
-    graphic_features = []
-    for feature in parse_gff_features(gff_path):
-        if not keep_gff_preview_feature(feature):
+    preview_features = [
+        feature
+        for feature in parse_gff_features(gff_path)
+        if keep_gff_preview_feature(feature)
+    ]
+    transcript_spans = {}
+    for feature in preview_features:
+        key = transcript_group_key(feature)
+        if key is None:
             continue
 
-        start0 = max(0, int(feature["start1"]) - 1)
-        end0 = min(seq_len, int(feature["end1"]))
-        if end0 <= start0:
+        bounds = feature_bounds0(feature, seq_len)
+        if bounds is None:
             continue
+
+        start0, end0 = bounds
+        if key in transcript_spans:
+            group_start0, group_end0 = transcript_spans[key]
+            transcript_spans[key] = min(group_start0, start0), max(group_end0, end0)
+        else:
+            transcript_spans[key] = start0, end0
+
+    transcript_levels = assign_transcript_preview_levels(transcript_spans)
+    graphic_features = []
+    for key, (start0, end0) in transcript_spans.items():
+        graphic_features.append(
+            GraphicFeature(
+                start=start0,
+                end=end0,
+                strand=0,
+                color="#7d8da6",
+                linecolor="#7d8da6",
+                linewidth=0,
+                thickness=2,
+                label=None,
+                fixed_level=transcript_levels[key],
+            )
+        )
+
+    for feature in preview_features:
+        bounds = feature_bounds0(feature, seq_len)
+        if bounds is None:
+            continue
+        start0, end0 = bounds
+
+        key = transcript_group_key(feature)
+        data = {}
+        if key is not None and key in transcript_levels:
+            data["fixed_level"] = transcript_levels[key]
 
         graphic_features.append(
             GraphicFeature(
@@ -738,6 +829,7 @@ def render_gff_preview_png(gff_path: Path, fasta_path: Path, out_path: Path):
                 strand=gff_strand_to_int(feature.get("strand", ".")),
                 color=gff_preview_color(feature),
                 label=gff_preview_label(feature),
+                **data,
             )
         )
 
@@ -746,7 +838,7 @@ def render_gff_preview_png(gff_path: Path, fasta_path: Path, out_path: Path):
     figure_height = 6
 
     fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
-    graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    graphic_record.plot(ax=ax, strand_in_label_threshold=8, draw_line=False)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
