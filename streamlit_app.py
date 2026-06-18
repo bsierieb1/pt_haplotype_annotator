@@ -1,16 +1,17 @@
 import io
 import json
+import math
 import re
 import subprocess
 import tempfile
 import zipfile
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import streamlit as st
 
 from Bio import SeqIO
@@ -34,7 +35,7 @@ Choose one input mode:
 - **Upload custom target region FASTA**
 
 The app then runs:
-1) Bowtie exact mapping for required guide set and optional odd guide set
+1) Bowtie exact mapping for even + odd guides
 2) Tile annotation (downstream only, <=20 kb by default, excludes regions containing N)
 3) Combine all annotations
 4) Locus FASTA + annotation GFF3s -> GenBank
@@ -536,6 +537,15 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
             return 1.0
         return 0.6
 
+    def compute_feature_fontdict(self, feature):
+        qualifiers = getattr(feature, "qualifiers", {}) or {}
+        source = str((qualifiers.get("source") or [""])[0]).lower()
+        if source == "ensembl":
+            return {"size": 8}
+        if source == "bowtie":
+            return {"size": 7}
+        return {"size": 7}
+
     def compute_filtered_features(self, features):
         kept = []
         for feature in features:
@@ -555,6 +565,16 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
         return kept
 
 
+def estimate_record_lines(seq_len: int) -> int:
+    if seq_len <= 30000:
+        return 1
+    if seq_len <= 80000:
+        return 2
+    if seq_len <= 150000:
+        return 3
+    return 4
+
+
 def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     with open(gbk_path, "r", encoding="utf-8") as handle:
         record = SeqIO.read(handle, "genbank")
@@ -562,12 +582,20 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     translator = PureTargetGenBankTranslator()
     graphic_record = translator.translate_record(record)
 
-    seq_len = len(record.seq)
-    figure_width = max(14, min(40, seq_len / 2500))
-    figure_height = 6
+    line_count = estimate_record_lines(len(record.seq))
+    figure_width = 14
+    figure_height = 2.6 + (line_count - 1) * 1.35
 
     fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
-    graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    if line_count == 1:
+        graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    else:
+        graphic_record.plot_on_multiple_lines(
+            ax=ax,
+            nucl_per_line=math.ceil(len(record.seq) / line_count),
+            strand_in_label_threshold=8,
+        )
+    ax.set_title(f"{record.id} ({len(record.seq):,} bp)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -578,27 +606,8 @@ def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     try:
         render_genbank_preview_png(gbk_path, preview_path)
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        return None, str(e)
     return preview_path, None
-
-
-def normalize_non_stranded_tiles_in_genbank(gbk_path: Path):
-    with open(gbk_path, "r", encoding="utf-8") as handle:
-        record = SeqIO.read(handle, "genbank")
-
-    changed = False
-    for feature in record.features:
-        qualifiers = getattr(feature, "qualifiers", {}) or {}
-        feature_type = str(getattr(feature, "type", "")).lower()
-        name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).upper()
-        if feature_type == "misc_feature" and name == "TILE":
-            if getattr(feature.location, "strand", None) is not None:
-                feature.location.strand = None
-                changed = True
-
-    if changed:
-        with open(gbk_path, "w", encoding="utf-8") as handle:
-            SeqIO.write(record, handle, "genbank")
 
 
 def show_preview_section(preview_path: Path | None, *, title: str | None = None, warning: str | None = None):
@@ -621,16 +630,17 @@ def render_multi_locus_preview_gallery(preview_rows: list[dict]):
         return
 
     st.subheader("Locus preview")
-    for row in available:
-        st.markdown(f"**{row['locus']}**")
-        st.image(str(row["preview_path"]), caption=f"{row['locus']} preview", use_container_width=True)
-        st.download_button(
-            f"Download preview PNG ({row['locus']})",
-            data=Path(row["preview_path"]).read_bytes(),
-            file_name=f"{row['locus_slug']}_preview.png",
-            mime="image/png",
-            key=f"download_preview_{row['locus_slug']}",
-        )
+    labels = [row["locus"] for row in available]
+    selected_label = st.selectbox("Choose locus preview", labels)
+    selected = next(row for row in available if row["locus"] == selected_label)
+    st.image(str(selected["preview_path"]), caption=f"{selected_label} preview", use_container_width=True)
+    st.download_button(
+        f"Download preview PNG ({selected_label})",
+        data=Path(selected["preview_path"]).read_bytes(),
+        file_name=f"{selected['locus_slug']}_preview.png",
+        mime="image/png",
+        key=f"download_preview_{selected['locus_slug']}",
+    )
 
     failed = [row for row in preview_rows if row.get("preview_error")]
     for row in failed[:5]:
@@ -877,7 +887,7 @@ def run_single_locus_pipeline(
     ref_path: Path,
     regions_gff: Path,
     even_path: Path,
-    odd_path: Path | None,
+    odd_path: Path,
     max_between_len: int,
     log,
 ):
@@ -897,8 +907,7 @@ def run_single_locus_pipeline(
         fail("bowtie-build", out, err)
 
     map_guides_to_gff(even_path, even_mapped, even_gff, "even", locus_dir, log)
-    if odd_path is not None:
-        map_guides_to_gff(odd_path, odd_mapped, odd_gff, "odd", locus_dir, log)
+    map_guides_to_gff(odd_path, odd_mapped, odd_gff, "odd", locus_dir, log)
 
     log("predict even tiles")
     rc, out, err = run_cmd(
@@ -920,36 +929,33 @@ def run_single_locus_pipeline(
         fail("make_between_regions.py (even)", out, err)
     log(out.strip() or "between even done")
 
-    if odd_path is not None:
-        log("predict odd tiles")
-        rc, out, err = run_cmd(
-            [
-                "python",
-                str(BETWEEN_SCRIPT),
-                "--gff",
-                str(odd_gff),
-                "--fasta",
-                str(ref_path),
-                "--out",
-                str(odd_tiles),
-                "--maxlen",
-                str(int(max_between_len)),
-            ],
-            locus_dir,
-        )
-        if rc != 0:
-            fail("make_between_regions.py (odd)", out, err)
-        log(out.strip() or "between odd done")
+    log("predict odd tiles")
+    rc, out, err = run_cmd(
+        [
+            "python",
+            str(BETWEEN_SCRIPT),
+            "--gff",
+            str(odd_gff),
+            "--fasta",
+            str(ref_path),
+            "--out",
+            str(odd_tiles),
+            "--maxlen",
+            str(int(max_between_len)),
+        ],
+        locus_dir,
+    )
+    if rc != 0:
+        fail("make_between_regions.py (odd)", out, err)
+    log(out.strip() or "between odd done")
 
     log("combine GFF3s")
     combined = ["##gff-version 3"]
     combined.append(strip_header(regions_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(even_gff.read_text(encoding="utf-8")))
-    if odd_path is not None:
-        combined.append(strip_header(odd_gff.read_text(encoding="utf-8")))
+    combined.append(strip_header(odd_gff.read_text(encoding="utf-8")))
     combined.append(strip_header(even_tiles.read_text(encoding="utf-8")))
-    if odd_path is not None:
-        combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
+    combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
     combined_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
 
     log("GFF3+FASTA -> GenBank")
@@ -960,16 +966,15 @@ def run_single_locus_pipeline(
         st.exception(e)
         st.stop()
 
-    normalize_non_stranded_tiles_in_genbank(gbk_path)
     preview_path, preview_error = maybe_render_genbank_preview(locus_dir, gbk_path)
 
     return {
         "even_mapped": even_mapped,
-        "odd_mapped": odd_mapped if odd_path is not None else None,
+        "odd_mapped": odd_mapped,
         "even_gff": even_gff,
-        "odd_gff": odd_gff if odd_path is not None else None,
+        "odd_gff": odd_gff,
         "even_tiles": even_tiles,
-        "odd_tiles": odd_tiles if odd_path is not None else None,
+        "odd_tiles": odd_tiles,
         "combined_gff": combined_gff,
         "gbk_path": gbk_path,
         "preview_png_path": preview_path or preview_png_path,
@@ -999,8 +1004,8 @@ else:
     ref_fa = None
     regions_bed = None
 
-guides_even = st.file_uploader("Guides FASTA (for single-tile design) or even guides FASTA (for multi-tile design)", type=["fa", "fas", "fasta", "fna"])
-guides_odd = st.file_uploader("Odd guides FASTA (for multi-tile design; leave empty for single-tile design)", type=["fa", "fas", "fasta", "fna"])
+guides_even = st.file_uploader("Guides EVEN FASTA (guides_even.fa)", type=["fa", "fasta", "fna"])
+guides_odd = st.file_uploader("Guides ODD FASTA (guides_odd.fa)", type=["fa", "fasta", "fna"])
 
 with st.expander("Advanced", expanded=False):
     max_between_len = st.number_input(
@@ -1009,9 +1014,9 @@ with st.expander("Advanced", expanded=False):
     keep_intermediates = st.checkbox("Show & allow download of intermediate files", value=False)
 
 if input_mode == "Use uploaded custom reference":
-    ready = bool(ref_fa and regions_bed and guides_even)
+    ready = bool(ref_fa and regions_bed and guides_even and guides_odd)
 else:
-    ready = bool(locus_coords and guides_even)
+    ready = bool(locus_coords and guides_even and guides_odd)
 
 run_btn = st.button("Run", type="primary", disabled=not ready)
 
@@ -1025,10 +1030,9 @@ if run_btn:
 
         # Shared guide files
         even_path = wd / "guides_even.fa"
-        odd_path = wd / "guides_odd.fa" if guides_odd is not None else None
+        odd_path = wd / "guides_odd.fa"
         even_path.write_bytes(guides_even.getvalue())
-        if odd_path is not None:
-            odd_path.write_bytes(guides_odd.getvalue())
+        odd_path.write_bytes(guides_odd.getvalue())
 
         log_area = st.empty()
         logs = []
@@ -1102,34 +1106,31 @@ if run_btn:
                     outputs["even_gff"].read_bytes(),
                     file_name="guides_even.gff3",
                 )
-                if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
-                    st.download_button(
-                        "guides_odd.gff3",
-                        outputs["odd_gff"].read_bytes(),
-                        file_name="guides_odd.gff3",
-                    )
+                st.download_button(
+                    "guides_odd.gff3",
+                    outputs["odd_gff"].read_bytes(),
+                    file_name="guides_odd.gff3",
+                )
                 st.download_button(
                     "between_regions_even.gff3",
                     outputs["even_tiles"].read_bytes(),
                     file_name="between_regions_even.gff3",
                 )
-                if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists():
-                    st.download_button(
-                        "between_regions_odd.gff3",
-                        outputs["odd_tiles"].read_bytes(),
-                        file_name="between_regions_odd.gff3",
-                    )
+                st.download_button(
+                    "between_regions_odd.gff3",
+                    outputs["odd_tiles"].read_bytes(),
+                    file_name="between_regions_odd.gff3",
+                )
                 st.download_button(
                     "guides_even.mapped",
                     outputs["even_mapped"].read_bytes(),
                     file_name="guides_even.mapped",
                 )
-                if outputs.get("odd_mapped") is not None and Path(outputs["odd_mapped"]).exists():
-                    st.download_button(
-                        "guides_odd.mapped",
-                        outputs["odd_mapped"].read_bytes(),
-                        file_name="guides_odd.mapped",
-                    )
+                st.download_button(
+                    "guides_odd.mapped",
+                    outputs["odd_mapped"].read_bytes(),
+                    file_name="guides_odd.mapped",
+                )
 
         else:
             # Multi-locus hg38 mode
@@ -1190,16 +1191,12 @@ if run_btn:
                     snp_gff_text=snp_gff_text,
                 )
 
-                guide_gff_paths = [("even", outputs["even_gff"])]
-                if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
-                    guide_gff_paths.append(("odd", outputs["odd_gff"]))
-
                 guide_snp_overlaps, pam_snp_overlaps = find_guide_snp_overlaps(
-                    guide_gff_paths,
+                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
                     snp_records,
                 )
                 non_ngg_pam_warnings = find_guides_with_non_ngg_pam(
-                    guide_gff_paths,
+                    [("even", outputs["even_gff"]), ("odd", outputs["odd_gff"])],
                     seq,
                 )
                 if guide_snp_overlaps or pam_snp_overlaps:
@@ -1245,9 +1242,9 @@ if run_btn:
                         "genes": count_gff_features(regions_gff),
                         "common_snps": len(snp_records),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
-                        "odd_guide_hits": count_gff_features(outputs["odd_gff"]) if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists() else 0,
+                        "odd_guide_hits": count_gff_features(outputs["odd_gff"]),
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
-                        "odd_tiles": count_gff_features(outputs["odd_tiles"]) if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists() else 0,
+                        "odd_tiles": count_gff_features(outputs["odd_tiles"]),
                         "genbank_file": f"{locus_slug}/custom.gbk",
                         "preview_png_file": f"{locus_slug}/custom.png",
                         "snp_genbank_file": f"{locus_slug}/custom_with_common_snps.gbk",
