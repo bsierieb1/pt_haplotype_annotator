@@ -1148,73 +1148,55 @@ def hg38_chrom_name(chrom_no_chr: str) -> str:
     return f"chr{chrom_no_chr}"
 
 
-def format_gff3_attrs(attrs: dict) -> str:
-    items = []
-    for key, value in attrs.items():
-        if key:
-            items.append(f"{sanitize_attr_value(key)}={sanitize_attr_value(value)}")
-    return ";".join(items) if items else "."
+def bed_feature_name(feature: dict, name_override: str | None = None) -> str:
+    if name_override:
+        return sanitize_attr_value(name_override) or "feature"
+
+    attrs = feature.get("attrs", {}) or {}
+    name = attrs.get("Name") or attrs.get("label") or attrs.get("ID") or "feature"
+    return sanitize_attr_value(name) or "feature"
 
 
-def write_genome_rebased_gff3(
+def write_genome_rebased_bed(
     input_gff: Path,
-    output_gff: Path,
+    output_bed: Path,
     chrom_no_chr: str,
     locus_start1: int,
     *,
-    source_override: str | None = None,
-    feature_name_override: str | None = None,
-    id_prefix_override: str | None = None,
+    name_override: str | None = None,
 ):
     chrom = hg38_chrom_name(chrom_no_chr)
-    lines = ["##gff-version 3"]
+    lines = []
 
     for feature in parse_gff_features(input_gff):
         local_start1 = int(feature["start1"])
         local_end1 = int(feature["end1"])
-        genome_start1 = locus_start1 + local_start1 - 1
-        genome_end1 = locus_start1 + local_end1 - 1
-        attrs = dict(feature.get("attrs", {}) or {})
+        bed_start0 = locus_start1 + local_start1 - 2
+        bed_end = locus_start1 + local_end1 - 1
+        if bed_end <= bed_start0:
+            continue
 
-        if source_override:
-            source = source_override
-        else:
-            source = feature["source"]
-
-        if feature_name_override:
-            attrs["Name"] = feature_name_override
-            attrs["label"] = feature_name_override
-
-        if id_prefix_override and attrs.get("ID"):
-            attrs["ID"] = re.sub(r"^[^.]+", id_prefix_override, attrs["ID"], count=1)
-        elif source == "bowtie":
-            guide_name = attrs.get("Name") or attrs.get("label") or attrs.get("ID") or "guide"
-            attrs["ID"] = f"{guide_name}.{chrom}.{genome_start1}.{feature['strand']}"
-
-        attrs["genome"] = "hg38"
-        attrs["local_seqid"] = feature["seqid"]
-        attrs["local_coord"] = f"{local_start1}-{local_end1}"
+        strand = feature.get("strand", ".")
+        if strand not in {"+", "-", "."}:
+            strand = "."
 
         lines.append(
             "\t".join(
                 [
                     chrom,
-                    source,
-                    feature["type"],
-                    str(genome_start1),
-                    str(genome_end1),
-                    feature["score"],
-                    feature["strand"],
-                    feature["phase"],
-                    format_gff3_attrs(attrs),
+                    str(bed_start0),
+                    str(bed_end),
+                    bed_feature_name(feature, name_override),
+                    "0",
+                    strand,
                 ]
             )
         )
 
-    output_gff.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output_bed.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
-def write_hg38_igv_export_files(
+def write_hg38_igv_bed_export_files(
     export_locus_dir: Path,
     outputs: dict,
     chrom_no_chr: str,
@@ -1223,31 +1205,29 @@ def write_hg38_igv_export_files(
     export_locus_dir.mkdir(parents=True, exist_ok=True)
 
     exported = {
-        "guides_even": export_locus_dir / "guides_even.gff3",
-        "tiles_even": export_locus_dir / "tiles_even.gff3",
+        "guides_even": export_locus_dir / "guides_even.bed",
+        "tiles_even": export_locus_dir / "tiles_even.bed",
         "guides_odd": None,
         "tiles_odd": None,
     }
 
-    write_genome_rebased_gff3(
+    write_genome_rebased_bed(
         outputs["even_gff"],
         exported["guides_even"],
         chrom_no_chr,
         locus_start1,
     )
-    write_genome_rebased_gff3(
+    write_genome_rebased_bed(
         outputs["even_tiles"],
         exported["tiles_even"],
         chrom_no_chr,
         locus_start1,
-        source_override="tiles",
-        feature_name_override="tiles",
-        id_prefix_override="TILES",
+        name_override="tiles",
     )
 
     if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
-        exported["guides_odd"] = export_locus_dir / "guides_odd.gff3"
-        write_genome_rebased_gff3(
+        exported["guides_odd"] = export_locus_dir / "guides_odd.bed"
+        write_genome_rebased_bed(
             outputs["odd_gff"],
             exported["guides_odd"],
             chrom_no_chr,
@@ -1255,15 +1235,13 @@ def write_hg38_igv_export_files(
         )
 
     if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists():
-        exported["tiles_odd"] = export_locus_dir / "tiles_odd.gff3"
-        write_genome_rebased_gff3(
+        exported["tiles_odd"] = export_locus_dir / "tiles_odd.bed"
+        write_genome_rebased_bed(
             outputs["odd_tiles"],
             exported["tiles_odd"],
             chrom_no_chr,
             locus_start1,
-            source_override="tiles",
-            feature_name_override="tiles",
-            id_prefix_override="TILES",
+            name_override="tiles",
         )
 
     return exported
@@ -1568,7 +1546,7 @@ if run_btn:
             loci = parse_multi_loci_or_stop(locus_coords)
             results_root = wd / "results"
             results_root.mkdir(parents=True, exist_ok=True)
-            export_root = wd / "igv_gff3_outputs"
+            export_root = wd / "igv_bed_outputs"
             export_root.mkdir(parents=True, exist_ok=True)
 
             summary_rows = []
@@ -1618,7 +1596,7 @@ if run_btn:
                     make_genbank_output=False,
                 )
 
-                export_paths = write_hg38_igv_export_files(
+                export_paths = write_hg38_igv_bed_export_files(
                     export_locus_dir=export_root / locus_slug,
                     outputs=outputs,
                     chrom_no_chr=chrom_no_chr,
@@ -1686,16 +1664,16 @@ if run_btn:
                         "guide_outputs": ", ".join(
                             name
                             for name, path in [
-                                ("guides_even.gff3", export_paths.get("guides_even")),
-                                ("guides_odd.gff3", export_paths.get("guides_odd")),
+                                ("guides_even.bed", export_paths.get("guides_even")),
+                                ("guides_odd.bed", export_paths.get("guides_odd")),
                             ]
                             if path is not None
                         ),
                         "tile_outputs": ", ".join(
                             name
                             for name, path in [
-                                ("tiles_even.gff3", export_paths.get("tiles_even")),
-                                ("tiles_odd.gff3", export_paths.get("tiles_odd")),
+                                ("tiles_even.bed", export_paths.get("tiles_even")),
+                                ("tiles_odd.bed", export_paths.get("tiles_odd")),
                             ]
                             if path is not None
                         ),
@@ -1718,13 +1696,13 @@ if run_btn:
             render_multi_locus_preview_gallery(preview_rows)
 
             st.download_button(
-                "Download IGV GFF3 outputs (.zip)",
+                "Download IGV BED outputs (.zip)",
                 data=zip_bytes,
-                file_name="hg38_igv_gff3_outputs.zip",
+                file_name="hg38_igv_bed_outputs.zip",
                 mime="application/zip",
             )
 
             if keep_intermediates:
                 st.caption(
-                    "The ZIP contains one folder per locus with genome-coordinate guides_even.gff3, optional guides_odd.gff3, tiles_even.gff3, and optional tiles_odd.gff3 for IGV."
+                    "The ZIP contains one folder per locus with genome-coordinate guides_even.bed, optional guides_odd.bed, tiles_even.bed, and optional tiles_odd.bed for IGV."
                 )

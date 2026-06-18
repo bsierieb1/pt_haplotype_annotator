@@ -5,7 +5,7 @@ Not an official PacBio tool.
 
 ## What it does
 
-This Streamlit app maps PureTarget guides, predicts tiles, generates annotated GFF3 outputs, and renders a preview PNG.
+This Streamlit app maps PureTarget guides, predicts tiles, generates annotation outputs, and renders a preview PNG.
 
 ## Input modes
 
@@ -23,7 +23,7 @@ For each locus, the app:
 - maps even and odd guides with Bowtie
 - predicts tiles
 - checks common SNP annotations from UCSC
-- writes genome-coordinate guide and tile GFF3 outputs for IGV
+- writes genome-coordinate guide and tile BED outputs for IGV
 - renders a static PNG preview
 
 It also reports:
@@ -66,15 +66,15 @@ Optional intermediates:
 - `guides_odd.mapped`
 
 ### hg38 mode
-IGV-ready GFF3 outputs are packaged as one folder per locus in a ZIP.
+IGV-ready BED outputs are packaged as one folder per locus in a ZIP.
 
 Typical files per locus:
-- `guides_even.gff3`
-- `guides_odd.gff3`
-- `tiles_even.gff3`
-- `tiles_odd.gff3`
+- `guides_even.bed`
+- `guides_odd.bed`
+- `tiles_even.bed`
+- `tiles_odd.bed`
 
-The hg38 ZIP files use genomic `chrN` coordinates so they can be loaded into IGV. Odd-guide files are included only when an odd-guide FASTA is uploaded. Preview PNGs are downloaded separately from the preview section.
+The hg38 ZIP files use genomic `chrN` coordinates and BED's 0-based, half-open intervals so they can be loaded into IGV. Odd-guide files are included only when an odd-guide FASTA is uploaded. Preview PNGs are downloaded separately from the preview section.
 
 ## Requirements
 
