@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 from Bio import SeqIO
-from dna_features_viewer import BiopythonTranslator
+from dna_features_viewer import BiopythonTranslator, GraphicFeature, GraphicRecord
 
 from gff_to_genbank_patched import gff_fasta_to_genbank
 
@@ -37,7 +37,7 @@ The app then runs:
 1) Bowtie exact mapping for required guide set and optional odd guide set
 2) Tile annotation (downstream only, <=20 kb by default, excludes regions containing N)
 3) Combine all annotations
-4) Locus FASTA + annotation GFF3s -> GenBank
+4) Render a locus preview and package downloadable outputs
 
 In human hg38 mode, the app will also check for common SNPs overlapping the guide or its PAM. Guides with non-NGG PAMs will also be flagged.
 """
@@ -647,10 +647,124 @@ def render_genbank_preview_png(gbk_path: Path, out_path: Path):
     plt.close(fig)
 
 
+def gff_preview_label(feature: dict) -> str | None:
+    attrs = feature.get("attrs", {}) or {}
+    source = str(feature.get("source") or "").lower()
+    feature_type = str(feature.get("type") or "").lower()
+
+    if source == "ensembl" and feature_type == "exon":
+        for key in ("label", "Name"):
+            value = attrs.get(key)
+            if value:
+                return str(value)[:40]
+        return None
+
+    for key in ("label", "Name", "name", "gene"):
+        value = attrs.get(key)
+        if value:
+            return str(value)[:40]
+
+    feature_id = attrs.get("ID")
+    if feature_id:
+        return str(feature_id)[:40]
+    return None
+
+
+def gff_preview_color(feature: dict) -> str:
+    attrs = feature.get("attrs", {}) or {}
+    source = str(feature.get("source") or "").lower()
+    feature_type = str(feature.get("type") or "").lower()
+
+    if source == "ensembl":
+        if feature_type == "exon":
+            return "#7d8da6"
+        return "#c7cedb"
+    if source == "bowtie":
+        name = str(attrs.get("Name") or attrs.get("label") or "").lower()
+        if "even" in name:
+            return "#4f81bd"
+        if "odd" in name:
+            return "#c0504d"
+        return "#6d9eeb"
+    if feature_type == "misc_feature":
+        name = str(attrs.get("Name") or attrs.get("label") or "").upper()
+        if name == "TILE":
+            return "#9bbb59"
+    return "#b7b7b7"
+
+
+def keep_gff_preview_feature(feature: dict) -> bool:
+    attrs = feature.get("attrs", {}) or {}
+    source = str(feature.get("source") or "").lower()
+    feature_type = str(feature.get("type") or "").lower()
+
+    if source in {"ensembl", "bowtie"}:
+        return True
+
+    if feature_type == "misc_feature":
+        name = str(attrs.get("Name") or attrs.get("label") or "").upper()
+        return name == "TILE"
+
+    return False
+
+
+def gff_strand_to_int(strand: str) -> int:
+    if strand == "+":
+        return 1
+    if strand == "-":
+        return -1
+    return 0
+
+
+def render_gff_preview_png(gff_path: Path, fasta_path: Path, out_path: Path):
+    with open(fasta_path, "r", encoding="utf-8") as handle:
+        record = SeqIO.read(handle, "fasta")
+
+    seq_len = len(record.seq)
+    graphic_features = []
+    for feature in parse_gff_features(gff_path):
+        if not keep_gff_preview_feature(feature):
+            continue
+
+        start0 = max(0, int(feature["start1"]) - 1)
+        end0 = min(seq_len, int(feature["end1"]))
+        if end0 <= start0:
+            continue
+
+        graphic_features.append(
+            GraphicFeature(
+                start=start0,
+                end=end0,
+                strand=gff_strand_to_int(feature.get("strand", ".")),
+                color=gff_preview_color(feature),
+                label=gff_preview_label(feature),
+            )
+        )
+
+    graphic_record = GraphicRecord(sequence_length=seq_len, features=graphic_features)
+    figure_width = max(14, min(40, seq_len / 2500))
+    figure_height = 6
+
+    fig, ax = plt.subplots(1, 1, figsize=(figure_width, figure_height))
+    graphic_record.plot(ax=ax, strand_in_label_threshold=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def maybe_render_genbank_preview(locus_dir: Path, gbk_path: Path):
     preview_path = locus_dir / "custom.png"
     try:
         render_genbank_preview_png(gbk_path, preview_path)
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+    return preview_path, None
+
+
+def maybe_render_gff_preview(locus_dir: Path, gff_path: Path, fasta_path: Path):
+    preview_path = locus_dir / "custom.png"
+    try:
+        render_gff_preview_png(gff_path, fasta_path, preview_path)
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
     return preview_path, None
@@ -779,31 +893,6 @@ def find_guide_snp_overlaps(guide_gff_paths, snp_records):
                         pam_info["pam_end1"] = pam_end1
                         pam_overlaps.append(pam_info)
     return guide_overlaps, pam_overlaps
-
-
-def write_snp_augmented_outputs(locus_dir: Path, ref_path: Path, combined_gff: Path, snp_gff_text: str):
-    snp_gff = locus_dir / "common_snps.gff3"
-    combined_snp_gff = locus_dir / "combined_with_common_snps.gff3"
-    gbk_snp_path = locus_dir / "custom_with_common_snps.gbk"
-
-    snp_gff.write_text(snp_gff_text, encoding="utf-8")
-    combined = ["##gff-version 3"]
-    combined.append(strip_header(combined_gff.read_text(encoding="utf-8")))
-    combined.append(strip_header(snp_gff_text))
-    combined_snp_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
-
-    try:
-        gff_fasta_to_genbank(str(combined_snp_gff), str(ref_path), str(gbk_snp_path))
-    except Exception as e:
-        st.error("Failed at: Common SNP GenBank conversion")
-        st.exception(e)
-        st.stop()
-
-    return {
-        "snp_gff": snp_gff,
-        "combined_snp_gff": combined_snp_gff,
-        "gbk_snp_path": gbk_snp_path,
-    }
 
 
 def sanitize_attr_value(s: str) -> str:
@@ -1055,6 +1144,131 @@ def write_zip_from_directory(root_dir: Path) -> bytes:
     return bio.getvalue()
 
 
+def hg38_chrom_name(chrom_no_chr: str) -> str:
+    return f"chr{chrom_no_chr}"
+
+
+def format_gff3_attrs(attrs: dict) -> str:
+    items = []
+    for key, value in attrs.items():
+        if key:
+            items.append(f"{sanitize_attr_value(key)}={sanitize_attr_value(value)}")
+    return ";".join(items) if items else "."
+
+
+def write_genome_rebased_gff3(
+    input_gff: Path,
+    output_gff: Path,
+    chrom_no_chr: str,
+    locus_start1: int,
+    *,
+    source_override: str | None = None,
+    feature_name_override: str | None = None,
+    id_prefix_override: str | None = None,
+):
+    chrom = hg38_chrom_name(chrom_no_chr)
+    lines = ["##gff-version 3"]
+
+    for feature in parse_gff_features(input_gff):
+        local_start1 = int(feature["start1"])
+        local_end1 = int(feature["end1"])
+        genome_start1 = locus_start1 + local_start1 - 1
+        genome_end1 = locus_start1 + local_end1 - 1
+        attrs = dict(feature.get("attrs", {}) or {})
+
+        if source_override:
+            source = source_override
+        else:
+            source = feature["source"]
+
+        if feature_name_override:
+            attrs["Name"] = feature_name_override
+            attrs["label"] = feature_name_override
+
+        if id_prefix_override and attrs.get("ID"):
+            attrs["ID"] = re.sub(r"^[^.]+", id_prefix_override, attrs["ID"], count=1)
+        elif source == "bowtie":
+            guide_name = attrs.get("Name") or attrs.get("label") or attrs.get("ID") or "guide"
+            attrs["ID"] = f"{guide_name}.{chrom}.{genome_start1}.{feature['strand']}"
+
+        attrs["genome"] = "hg38"
+        attrs["local_seqid"] = feature["seqid"]
+        attrs["local_coord"] = f"{local_start1}-{local_end1}"
+
+        lines.append(
+            "\t".join(
+                [
+                    chrom,
+                    source,
+                    feature["type"],
+                    str(genome_start1),
+                    str(genome_end1),
+                    feature["score"],
+                    feature["strand"],
+                    feature["phase"],
+                    format_gff3_attrs(attrs),
+                ]
+            )
+        )
+
+    output_gff.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_hg38_igv_export_files(
+    export_locus_dir: Path,
+    outputs: dict,
+    chrom_no_chr: str,
+    locus_start1: int,
+) -> dict:
+    export_locus_dir.mkdir(parents=True, exist_ok=True)
+
+    exported = {
+        "guides_even": export_locus_dir / "guides_even.gff3",
+        "tiles_even": export_locus_dir / "tiles_even.gff3",
+        "guides_odd": None,
+        "tiles_odd": None,
+    }
+
+    write_genome_rebased_gff3(
+        outputs["even_gff"],
+        exported["guides_even"],
+        chrom_no_chr,
+        locus_start1,
+    )
+    write_genome_rebased_gff3(
+        outputs["even_tiles"],
+        exported["tiles_even"],
+        chrom_no_chr,
+        locus_start1,
+        source_override="tiles",
+        feature_name_override="tiles",
+        id_prefix_override="TILES",
+    )
+
+    if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists():
+        exported["guides_odd"] = export_locus_dir / "guides_odd.gff3"
+        write_genome_rebased_gff3(
+            outputs["odd_gff"],
+            exported["guides_odd"],
+            chrom_no_chr,
+            locus_start1,
+        )
+
+    if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists():
+        exported["tiles_odd"] = export_locus_dir / "tiles_odd.gff3"
+        write_genome_rebased_gff3(
+            outputs["odd_tiles"],
+            exported["tiles_odd"],
+            chrom_no_chr,
+            locus_start1,
+            source_override="tiles",
+            feature_name_override="tiles",
+            id_prefix_override="TILES",
+        )
+
+    return exported
+
+
 def map_guides_to_gff(guides_fa_path: Path, mapped_out: Path, gff_out: Path, label: str, wd: Path, log):
     log(f"bowtie map {label}")
     rc, out, err = run_cmd(
@@ -1093,6 +1307,7 @@ def run_single_locus_pipeline(
     odd_path: Path | None,
     max_between_len: int,
     log,
+    make_genbank_output: bool = True,
 ):
     even_mapped = locus_dir / "guides_even.mapped"
     odd_mapped = locus_dir / "guides_odd.mapped"
@@ -1165,16 +1380,20 @@ def run_single_locus_pipeline(
         combined.append(strip_header(odd_tiles.read_text(encoding="utf-8")))
     combined_gff.write_text("\n".join([c for c in combined if c != ""]) + "\n", encoding="utf-8")
 
-    log("GFF3+FASTA -> GenBank")
-    try:
-        gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
-    except Exception as e:
-        st.error("Failed at: GenBank conversion")
-        st.exception(e)
-        st.stop()
+    if make_genbank_output:
+        log("GFF3+FASTA -> GenBank")
+        try:
+            gff_fasta_to_genbank(str(combined_gff), str(ref_path), str(gbk_path))
+        except Exception as e:
+            st.error("Failed at: GenBank conversion")
+            st.exception(e)
+            st.stop()
 
-    normalize_non_stranded_tiles_in_genbank(gbk_path)
-    preview_path, preview_error = maybe_render_genbank_preview(locus_dir, gbk_path)
+        normalize_non_stranded_tiles_in_genbank(gbk_path)
+        preview_path, preview_error = maybe_render_genbank_preview(locus_dir, gbk_path)
+    else:
+        log("render preview PNG")
+        preview_path, preview_error = maybe_render_gff_preview(locus_dir, combined_gff, ref_path)
 
     return {
         "even_mapped": even_mapped,
@@ -1184,7 +1403,7 @@ def run_single_locus_pipeline(
         "even_tiles": even_tiles,
         "odd_tiles": odd_tiles if odd_path is not None else None,
         "combined_gff": combined_gff,
-        "gbk_path": gbk_path,
+        "gbk_path": gbk_path if make_genbank_output else None,
         "preview_png_path": preview_path or preview_png_path,
         "preview_error": preview_error,
     }
@@ -1349,6 +1568,8 @@ if run_btn:
             loci = parse_multi_loci_or_stop(locus_coords)
             results_root = wd / "results"
             results_root.mkdir(parents=True, exist_ok=True)
+            export_root = wd / "igv_gff3_outputs"
+            export_root.mkdir(parents=True, exist_ok=True)
 
             summary_rows = []
             preview_rows = []
@@ -1382,7 +1603,7 @@ if run_btn:
                     encoding="utf-8",
                 )
 
-                snp_gff_text, snp_records = ucsc_common_snps_to_local_gff3(
+                _, snp_records = ucsc_common_snps_to_local_gff3(
                     raw_snps, chrom_no_chr, start1, end1, local_seqid
                 )
 
@@ -1394,13 +1615,14 @@ if run_btn:
                     odd_path=odd_path,
                     max_between_len=int(max_between_len),
                     log=lambda msg, prefix=locus_slug: log(f"[{prefix}] {msg}"),
+                    make_genbank_output=False,
                 )
 
-                snp_outputs = write_snp_augmented_outputs(
-                    locus_dir=locus_dir,
-                    ref_path=ref_path,
-                    combined_gff=outputs["combined_gff"],
-                    snp_gff_text=snp_gff_text,
+                export_paths = write_hg38_igv_export_files(
+                    export_locus_dir=export_root / locus_slug,
+                    outputs=outputs,
+                    chrom_no_chr=chrom_no_chr,
+                    locus_start1=start1,
                 )
 
                 guide_gff_paths = [("even", outputs["even_gff"])]
@@ -1461,9 +1683,22 @@ if run_btn:
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]) if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists() else 0,
                         "even_tiles": count_gff_features(outputs["even_tiles"]),
                         "odd_tiles": count_gff_features(outputs["odd_tiles"]) if outputs.get("odd_tiles") is not None and Path(outputs["odd_tiles"]).exists() else 0,
-                        "genbank_file": f"{locus_slug}/custom.gbk",
-                        "preview_png_file": f"{locus_slug}/custom.png",
-                        "snp_genbank_file": f"{locus_slug}/custom_with_common_snps.gbk",
+                        "guide_outputs": ", ".join(
+                            name
+                            for name, path in [
+                                ("guides_even.gff3", export_paths.get("guides_even")),
+                                ("guides_odd.gff3", export_paths.get("guides_odd")),
+                            ]
+                            if path is not None
+                        ),
+                        "tile_outputs": ", ".join(
+                            name
+                            for name, path in [
+                                ("tiles_even.gff3", export_paths.get("tiles_even")),
+                                ("tiles_odd.gff3", export_paths.get("tiles_odd")),
+                            ]
+                            if path is not None
+                        ),
                     }
                 )
                 preview_rows.append(
@@ -1475,7 +1710,7 @@ if run_btn:
                     }
                 )
 
-            zip_bytes = write_zip_from_directory(results_root)
+            zip_bytes = write_zip_from_directory(export_root)
 
             st.success(f"Done! Processed {len(summary_rows)} locus/loci.")
             st.subheader("Per-locus summary")
@@ -1483,13 +1718,13 @@ if run_btn:
             render_multi_locus_preview_gallery(preview_rows)
 
             st.download_button(
-                "Download all locus outputs (.zip)",
+                "Download IGV GFF3 outputs (.zip)",
                 data=zip_bytes,
-                file_name="hg38_multi_locus_outputs.zip",
+                file_name="hg38_igv_gff3_outputs.zip",
                 mime="application/zip",
             )
 
             if keep_intermediates:
                 st.caption(
-                    "The ZIP contains one folder per locus with custom_reference.fa, custom_regions.gff3, guide mappings, tile GFF3s, combined.gff3, custom.gbk, custom.png, common_snps.gff3, combined_with_common_snps.gff3, and custom_with_common_snps.gbk."
+                    "The ZIP contains one folder per locus with genome-coordinate guides_even.gff3, optional guides_odd.gff3, tiles_even.gff3, and optional tiles_odd.gff3 for IGV."
                 )

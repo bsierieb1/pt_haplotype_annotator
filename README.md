@@ -5,7 +5,7 @@ Not an official PacBio tool.
 
 ## What it does
 
-This Streamlit app maps PureTarget guides, predicts tiles, generates annotated GFF3 and GenBank outputs, and renders a preview PNG from the non-SNP GenBank file.
+This Streamlit app maps PureTarget guides, predicts tiles, generates annotated GFF3 outputs, and renders a preview PNG.
 
 ## Input modes
 
@@ -19,12 +19,12 @@ Overlapping resolved loci are merged before processing.
 
 For each locus, the app:
 - fetches hg38 sequence from UCSC
-- fetches gene annotations from Ensembl
+- fetches main-transcript exon annotations from Ensembl
 - maps even and odd guides with Bowtie
 - predicts tiles
-- adds common SNP annotations from UCSC
-- writes GFF3 and GenBank outputs
-- renders a static PNG preview from the non-SNP GenBank output
+- checks common SNP annotations from UCSC
+- writes genome-coordinate guide and tile GFF3 outputs for IGV
+- renders a static PNG preview
 
 It also reports:
 - guides overlapping common SNPs (including common SNPs in the PAM)
@@ -66,21 +66,15 @@ Optional intermediates:
 - `guides_odd.mapped`
 
 ### hg38 mode
-Outputs are packaged as one folder per locus in a ZIP.
+IGV-ready GFF3 outputs are packaged as one folder per locus in a ZIP.
 
 Typical files per locus:
-- `custom_reference.fa`
-- `custom_regions.gff3`
 - `guides_even.gff3`
 - `guides_odd.gff3`
-- `between_regions_even.gff3`
-- `between_regions_odd.gff3`
-- `combined.gff3`
-- `custom.gbk`
-- `custom.png`
-- `common_snps.gff3`
-- `combined_with_common_snps.gff3`
-- `custom_with_common_snps.gbk`
+- `tiles_even.gff3`
+- `tiles_odd.gff3`
+
+The hg38 ZIP files use genomic `chrN` coordinates so they can be loaded into IGV. Odd-guide files are included only when an odd-guide FASTA is uploaded. Preview PNGs are downloaded separately from the preview section.
 
 ## Requirements
 
@@ -105,4 +99,4 @@ Python packages:
 - hg38 mode supports canonical human chromosomes only
 - gene lookups use Ensembl
 - sequence and common SNP retrieval use UCSC
-- only gene-level annotations are included from Ensembl
+- hg38 previews use one main Ensembl transcript per gene, preferring MANE Select when available
