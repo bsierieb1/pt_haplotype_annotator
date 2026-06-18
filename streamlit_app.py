@@ -276,6 +276,68 @@ def fetch_ensembl_gene_overlaps(chrom_no_chr: str, start1: int, end1: int):
     return data
 
 
+def fetch_ensembl_gene_model(gene_id: str) -> dict:
+    """
+    Fetch transcripts/exons for a gene. MANE annotations are included when
+    Ensembl has them, so previews can prefer a representative isoform.
+    """
+    url = f"https://rest.ensembl.org/lookup/id/{gene_id}?expand=1;mane=1"
+    data = http_get_json(url, headers={"Content-Type": "application/json"})
+    if not isinstance(data, dict):
+        stop_with_error(f"Unexpected Ensembl transcript response for gene {gene_id}.")
+    return data
+
+
+def strip_stable_id_version(stable_id: str | None) -> str:
+    return str(stable_id or "").split(".", 1)[0]
+
+
+def mane_rank(transcript: dict) -> int:
+    mane_entries = transcript.get("MANE") or []
+    mane_types = {
+        str(entry.get("type") or "")
+        for entry in mane_entries
+        if isinstance(entry, dict)
+    }
+    if "MANE_Select" in mane_types:
+        return 0
+    if mane_entries:
+        return 1
+    return 2
+
+
+def select_main_transcript(gene_model: dict) -> dict | None:
+    transcripts = [
+        tx
+        for tx in gene_model.get("Transcript", [])
+        if isinstance(tx, dict) and tx.get("Exon")
+    ]
+    if not transcripts:
+        return None
+
+    canonical_id = strip_stable_id_version(gene_model.get("canonical_transcript"))
+
+    def transcript_sort_key(tx: dict):
+        tx_id = strip_stable_id_version(tx.get("id"))
+        is_canonical = tx_id == canonical_id or bool(tx.get("is_canonical"))
+        is_protein_coding = str(tx.get("biotype") or "") == "protein_coding"
+        exon_count = len(tx.get("Exon") or [])
+        try:
+            length = int(tx.get("length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        return (
+            mane_rank(tx),
+            0 if is_canonical else 1,
+            0 if is_protein_coding else 1,
+            -exon_count,
+            -length,
+            tx_id,
+        )
+
+    return sorted(transcripts, key=transcript_sort_key)[0]
+
+
 def _extract_track_records(obj, track_name: str):
     if isinstance(obj, list):
         return obj
@@ -495,6 +557,16 @@ def find_guides_with_non_ngg_pam(guide_gff_paths, ref_seq: str):
 class PureTargetGenBankTranslator(BiopythonTranslator):
     def compute_feature_label(self, feature):
         qualifiers = getattr(feature, "qualifiers", {}) or {}
+        source = str((qualifiers.get("source") or [""])[0]).lower()
+        feature_type = str(getattr(feature, "type", "")).lower()
+
+        if source == "ensembl" and feature_type == "exon":
+            for key in ("label", "Name"):
+                value = qualifiers.get(key)
+                if value:
+                    return str(value[0])[:40]
+            return None
+
         for key in ("label", "Name", "name", "gene"):
             value = qualifiers.get(key)
             if value:
@@ -510,6 +582,8 @@ class PureTargetGenBankTranslator(BiopythonTranslator):
         feature_type = str(getattr(feature, "type", "")).lower()
 
         if source == "ensembl":
+            if feature_type == "exon":
+                return "#7d8da6"
             return "#c7cedb"
         if source == "bowtie":
             name = str((qualifiers.get("Name") or qualifiers.get("label") or [""])[0]).lower()
@@ -736,68 +810,207 @@ def sanitize_attr_value(s: str) -> str:
     return str(s).replace(";", ",").replace("=", "_").replace("\t", " ").strip()
 
 
-def genes_to_local_gff3(genes, chrom_no_chr: str, start1: int, end1: int, local_seqid: str) -> str:
-    """
-    Rebase genomic hg38 coordinates onto the extracted local sequence.
-    Output only gene-level misc_feature annotations with clean Name/label.
-    """
-    lines = ["##gff-version 3"]
+def strand_to_gff(strand) -> str:
+    if strand == 1 or str(strand) == "1":
+        return "+"
+    if strand == -1 or str(strand) == "-1":
+        return "-"
+    return "."
 
-    for g in genes:
-        gstart = g.get("start")
-        gend = g.get("end")
-        if gstart is None or gend is None:
+
+def clipped_local_interval(
+    feature_start1,
+    feature_end1,
+    locus_start1: int,
+    locus_end1: int,
+) -> tuple[int, int, int, int] | None:
+    if feature_start1 is None or feature_end1 is None:
+        return None
+
+    clipped_start = max(int(feature_start1), locus_start1)
+    clipped_end = min(int(feature_end1), locus_end1)
+    if clipped_start > clipped_end:
+        return None
+
+    local_start = clipped_start - locus_start1 + 1
+    local_end = clipped_end - locus_start1 + 1
+    return clipped_start, clipped_end, local_start, local_end
+
+
+def gene_display_label(gene: dict, fallback_id: str) -> str:
+    label = (
+        gene.get("external_name")
+        or gene.get("gene_name")
+        or gene.get("display_name")
+        or gene.get("description")
+        or fallback_id
+    )
+    return sanitize_attr_value(label)
+
+
+def gene_span_to_local_gff3_line(
+    gene: dict,
+    chrom_no_chr: str,
+    start1: int,
+    end1: int,
+    local_seqid: str,
+) -> str | None:
+    interval = clipped_local_interval(gene.get("start"), gene.get("end"), start1, end1)
+    if interval is None:
+        return None
+
+    clipped_start, clipped_end, local_start, local_end = interval
+    gene_id = str(gene.get("id") or f"gene_{chrom_no_chr}_{gene.get('start')}_{gene.get('end')}")
+    label = gene_display_label(gene, gene_id)
+
+    attrs = (
+        f"ID={sanitize_attr_value(gene_id)};"
+        f"Name={label};"
+        f"label={label};"
+        f"source=Ensembl;"
+        f"genome=hg38;"
+        f"orig_coord={chrom_no_chr}:{clipped_start}-{clipped_end}"
+    )
+
+    return "\t".join(
+        [
+            local_seqid,
+            "Ensembl",
+            "misc_feature",
+            str(local_start),
+            str(local_end),
+            ".",
+            strand_to_gff(gene.get("strand")),
+            ".",
+            attrs,
+        ]
+    )
+
+
+def transcript_exons_to_local_gff3_lines(
+    gene: dict,
+    transcript: dict,
+    chrom_no_chr: str,
+    start1: int,
+    end1: int,
+    local_seqid: str,
+) -> list[str]:
+    gene_id = str(gene.get("id") or transcript.get("Parent") or "gene")
+    transcript_id = str(transcript.get("id") or f"{gene_id}.main_transcript")
+    label = gene_display_label(gene, gene_id)
+    tx_label = sanitize_attr_value(transcript.get("display_name") or transcript_id)
+    strand_char = strand_to_gff(transcript.get("strand", gene.get("strand")))
+    exons = transcript.get("Exon") or []
+    exons = sorted(
+        exons,
+        key=lambda exon: int(exon.get("start") or 0),
+        reverse=(strand_char == "-"),
+    )
+
+    visible_exons = []
+    for exon_number, exon in enumerate(exons, start=1):
+        interval = clipped_local_interval(exon.get("start"), exon.get("end"), start1, end1)
+        if interval is None:
             continue
-
-        clipped_start = max(int(gstart), start1)
-        clipped_end = min(int(gend), end1)
-        if clipped_start > clipped_end:
-            continue
-
-        local_start = clipped_start - start1 + 1
-        local_end = clipped_end - start1 + 1
-
-        gene_id = g.get("id") or f"gene_{chrom_no_chr}_{gstart}_{gend}"
-        label = (
-            g.get("external_name")
-            or g.get("gene_name")
-            or g.get("description")
-            or gene_id
+        clipped_start, clipped_end, local_start, local_end = interval
+        visible_exons.append(
+            {
+                "exon": exon,
+                "exon_number": exon_number,
+                "clipped_start": clipped_start,
+                "clipped_end": clipped_end,
+                "local_start": local_start,
+                "local_end": local_end,
+            }
         )
-        label = sanitize_attr_value(label)
 
-        strand = g.get("strand")
-        if strand == 1:
-            strand_char = "+"
-        elif strand == -1:
-            strand_char = "-"
-        else:
-            strand_char = "."
+    lines = []
+    mane_entries = transcript.get("MANE") or []
+    mane_type = ""
+    for entry in mane_entries:
+        if isinstance(entry, dict) and entry.get("type"):
+            mane_type = sanitize_attr_value(entry.get("type"))
+            break
 
-        attrs = (
-            f"ID={sanitize_attr_value(gene_id)};"
-            f"Name={label};"
-            f"label={label};"
-            f"source=Ensembl;"
-            f"genome=hg38;"
-            f"orig_coord={chrom_no_chr}:{clipped_start}-{clipped_end}"
+    for visible_index, item in enumerate(visible_exons, start=1):
+        exon = item["exon"]
+        exon_id = str(
+            exon.get("id")
+            or f"{transcript_id}.exon{item['exon_number']}"
         )
+        attrs = [
+            f"ID={sanitize_attr_value(transcript_id)}.exon{item['exon_number']}",
+            f"gene={label}",
+            f"transcript_id={sanitize_attr_value(transcript_id)}",
+            f"transcript_name={tx_label}",
+            f"source=Ensembl",
+            f"genome=hg38",
+            f"orig_coord={chrom_no_chr}:{item['clipped_start']}-{item['clipped_end']}",
+            f"exon_number={item['exon_number']}",
+            f"ensembl_exon_id={sanitize_attr_value(exon_id)}",
+        ]
+        if visible_index == 1:
+            attrs.append(f"Name={label}")
+            attrs.append(f"label={label}")
+        if mane_type:
+            attrs.append(f"mane={mane_type}")
 
         lines.append(
             "\t".join(
                 [
                     local_seqid,
                     "Ensembl",
-                    "misc_feature",
-                    str(local_start),
-                    str(local_end),
+                    "exon",
+                    str(item["local_start"]),
+                    str(item["local_end"]),
                     ".",
                     strand_char,
                     ".",
-                    attrs,
+                    ";".join(attrs),
                 ]
             )
         )
+
+    return lines
+
+
+def genes_to_local_gff3(genes, chrom_no_chr: str, start1: int, end1: int, local_seqid: str) -> str:
+    """
+    Rebase hg38 gene annotations onto the extracted sequence.
+    Prefer the MANE Select transcript, then canonical transcript, and write
+    visible exons so the preview shows exon/intron structure.
+    """
+    lines = ["##gff-version 3"]
+
+    for gene in genes:
+        gene_id = gene.get("id")
+        exon_lines = []
+        if gene_id:
+            gene_model = fetch_ensembl_gene_model(str(gene_id))
+            transcript = select_main_transcript(gene_model)
+            if transcript is not None:
+                exon_lines = transcript_exons_to_local_gff3_lines(
+                    gene,
+                    transcript,
+                    chrom_no_chr,
+                    start1,
+                    end1,
+                    local_seqid,
+                )
+
+        if exon_lines:
+            lines.extend(exon_lines)
+            continue
+
+        span_line = gene_span_to_local_gff3_line(
+            gene,
+            chrom_no_chr,
+            start1,
+            end1,
+            local_seqid,
+        )
+        if span_line is not None:
+            lines.append(span_line)
 
     return "\n".join(lines) + "\n"
 
@@ -1163,7 +1376,7 @@ if run_btn:
                 log(f"[{locus_slug}] fetch UCSC common SNPs")
                 raw_snps = fetch_ucsc_common_snps(chrom_no_chr, start1, end1)
 
-                log(f"[{locus_slug}] convert Ensembl genes -> local GFF3")
+                log(f"[{locus_slug}] convert Ensembl main transcripts -> local GFF3")
                 regions_gff.write_text(
                     genes_to_local_gff3(genes, chrom_no_chr, start1, end1, local_seqid),
                     encoding="utf-8",
@@ -1242,7 +1455,7 @@ if run_btn:
                     {
                         "locus": f"{chrom_no_chr}:{start1}-{end1}",
                         "seq_length_bp": len(seq),
-                        "genes": count_gff_features(regions_gff),
+                        "genes": len(genes),
                         "common_snps": len(snp_records),
                         "even_guide_hits": count_gff_features(outputs["even_gff"]),
                         "odd_guide_hits": count_gff_features(outputs["odd_gff"]) if outputs.get("odd_gff") is not None and Path(outputs["odd_gff"]).exists() else 0,
