@@ -789,6 +789,7 @@ def render_multi_locus_preview_gallery(preview_rows: list[dict]):
             file_name=f"{row['locus_slug']}_preview.png",
             mime="image/png",
             key=f"download_preview_{row['locus_slug']}",
+            on_click="ignore",
         )
 
     failed = [row for row in preview_rows if row.get("preview_error")]
@@ -1500,12 +1501,14 @@ if run_btn:
                 data=bed_outputs["guides_even"].read_bytes(),
                 file_name="guides_even.bed",
                 mime="text/plain",
+                on_click="ignore",
             )
             st.download_button(
                 "Download tiles_even.bed",
                 data=bed_outputs["tiles_even"].read_bytes(),
                 file_name="tiles_even.bed",
                 mime="text/plain",
+                on_click="ignore",
             )
             if bed_outputs.get("guides_odd") is not None and Path(bed_outputs["guides_odd"]).exists():
                 st.download_button(
@@ -1513,6 +1516,7 @@ if run_btn:
                     data=Path(bed_outputs["guides_odd"]).read_bytes(),
                     file_name="guides_odd.bed",
                     mime="text/plain",
+                    on_click="ignore",
                 )
             if bed_outputs.get("tiles_odd") is not None and Path(bed_outputs["tiles_odd"]).exists():
                 st.download_button(
@@ -1520,6 +1524,7 @@ if run_btn:
                     data=Path(bed_outputs["tiles_odd"]).read_bytes(),
                     file_name="tiles_odd.bed",
                     mime="text/plain",
+                    on_click="ignore",
                 )
 
             show_preview_section(
@@ -1533,6 +1538,7 @@ if run_btn:
                     data=Path(outputs["preview_png_path"]).read_bytes(),
                     file_name="custom.png",
                     mime="image/png",
+                    on_click="ignore",
                 )
 
         else:
@@ -1693,6 +1699,7 @@ if run_btn:
                 data=zip_bytes,
                 file_name="hg38_igv_bed_outputs.zip",
                 mime="application/zip",
+                on_click="ignore",
             )
 
             if keep_intermediates:
