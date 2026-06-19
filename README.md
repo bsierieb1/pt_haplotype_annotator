@@ -37,7 +37,7 @@ Upload:
 - `guides_even.fa`
 - `guides_odd.fa`
 
-The app converts BED to GFF3, maps guides, predicts tiles, combines annotations, writes GFF3 + GenBank output, and renders a PNG preview from the non-SNP GenBank output.
+The app converts BED to GFF3 internally, maps guides, predicts tiles, combines annotations, writes custom-reference-coordinate BED outputs for IGV, and renders a PNG preview that includes the uploaded BED annotations.
 
 ## Tile logic
 
@@ -52,18 +52,13 @@ Rules:
 
 ### Custom reference mode
 Main outputs:
-- `combined.gff3`
-- `custom.gbk`
 - `custom.png`
+- `guides_even.bed`
+- `guides_odd.bed`
+- `tiles_even.bed`
+- `tiles_odd.bed`
 
-Optional intermediates:
-- `custom_regions.gff3`
-- `guides_even.gff3`
-- `guides_odd.gff3`
-- `between_regions_even.gff3`
-- `between_regions_odd.gff3`
-- `guides_even.mapped`
-- `guides_odd.mapped`
+Odd-guide files are included only when an odd-guide FASTA is uploaded. Custom-reference BED outputs keep the uploaded reference sequence names and use BED's 0-based, half-open intervals.
 
 ### hg38 mode
 IGV-ready BED outputs are packaged as one folder per locus in a ZIP.
@@ -85,14 +80,12 @@ System packages:
 Python packages:
 - `streamlit`
 - `biopython`
-- `bcbio-gff`
 - `dna_features_viewer`
 
 ## Main files
 
 - `streamlit_app.py` — main app
 - `make_between_regions.py` — tile prediction helper
-- `gff_to_genbank_patched.py` — GFF3/FASTA to GenBank helper
 
 ## Notes
 
